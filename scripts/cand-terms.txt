@@ -1,0 +1,27 @@
+dall-e
+midjourney
+stable diffusion
+sora
+tensorflow
+pytorch
+jax
+keras
+heroku
+fly.io
+npm
+sublime
+atom
+vscode
+textmate
+zed
+vision pro
+oculus
+google glass
+webpack
+vite
+grunt
+gulp
+docker
+kubernetes
+vim
+neovim
