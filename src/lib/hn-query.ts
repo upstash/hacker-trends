@@ -8,7 +8,7 @@
  * wire contract is just `?op=&q=&sort=&…`.
  *
  * NOTE: these builders run inside the Vercel Edge runtime (the `/api/hn`
- * route), so keep this module on web-standard APIs only — no Node built-ins.
+ * route), so keep this module on web-standard APIs only, no Node built-ins.
  */
 
 export type HnDoc = {
@@ -46,7 +46,7 @@ export type AggResponse = Aggregations & { latencyMs: number };
 /**
  * Tokenize the user query. We split on whitespace AND punctuation so that
  * `GPT-4`, `github.com`, `self-hosted` become multi-token queries we can AND
- * together — matching how the index itself tokenizes those at write time.
+ * together, matching how the index itself tokenizes those at write time.
  * Sub-tokens shorter than 2 chars are dropped as low-signal; if that leaves
  * nothing (e.g. `C++`), fall back to the raw whitespace-split.
  */
@@ -63,14 +63,32 @@ export function tokenize(q: string): string[] {
     .filter((t) => t.length > 0);
 }
 
+// How hard an exact-phrase title match outranks scattered token matches. Kept
+// deliberately GENTLE: it's a tiebreaker among comparably-popular results, not
+// an override. At 3 (vs the title token's $boost of 5) it demotes off-topic
+// scatter — `vision pro` stops surfacing "Gemini 3 Pro: the frontier of vision
+// AI" — while still keeping hugely-upvoted near-misses (the "self-hosting" mega
+// threads under the query `self hosted`) at the top. Higher values (5, 10) start
+// burying those popular variants under tiny exact-title posts, so we don't.
+const PHRASE_BOOST = 3.0;
+
+export type FilterOpts = { phraseBoost?: boolean };
+
 /**
  * Build the SEARCH.QUERY filter.
  *
  * Each token must match somewhere (`$and` across tokens), and within a token
- * we OR across title (boosted) + text. Single-token queries also OR-in the
- * `by` keyword for exact-handle hits (`tptacek`, `patio11`, …). Matching is
- * exact-token per field (see the clause note below) — no fuzzy — so the trend
- * count tracks real mentions, and `cahid arda xxxx heyoo` returns nothing.
+ * we OR across title (boosted) + text. Matching is exact-token per field (see
+ * the clause note below), no fuzzy, so the trend count tracks real mentions of
+ * the term, and `cahid arda xxxx heyoo` returns nothing.
+ *
+ * `opts.phraseBoost` (search path only) additionally rewards docs whose TITLE
+ * contains the full query as an adjacent phrase. This is the one place the
+ * search and trend filters legitimately diverge: ranking cares about phrase
+ * adjacency, a histogram count does not — and the aggregate path leaves it off
+ * so the trend snippet stays minimal. Crucially it does NOT change the matched
+ * SET (a title containing the phrase already contains every token), so doc
+ * counts are identical with or without it; it only moves matches up the order.
  */
 export function buildFilter(
   q: string,
@@ -78,10 +96,11 @@ export function buildFilter(
   to?: string,
   by?: string,
   type?: string,
+  opts?: FilterOpts,
 ): Record<string, unknown> {
   const tokens = tokenize(q);
 
-  // Exact-token matching on BOTH fields — no fuzzy ($smart). This is a *trends*
+  // Exact-token matching on BOTH fields, no fuzzy ($smart). This is a *trends*
   // tool, so the histogram count and the upvote/discussion sorts must reflect
   // docs that actually contain the term, not a fuzzy neighborhood. $smart's
   // typo-tolerance + prefix expansion is catastrophically loose on short words:
@@ -96,19 +115,29 @@ export function buildFilter(
 
   // Each AND-arm here is a hard constraint. The query clauses ($or arms) and
   // the time-range clause are both required. NOTE: a top-level $or alongside
-  // another top-level field is treated as a *scoring* hint, not a hard match —
+  // another top-level field is treated as a *scoring* hint, not a hard match,
   // so without an explicit $and, clicking a month bar would drop the query
   // filter and return every doc in that month.
   const must: Record<string, unknown>[] = [];
 
-  if (tokens.length === 1) {
-    const t = tokens[0];
-    must.push({ $or: [titleClause(t), textClause(t), { by: t }] });
-  } else if (tokens.length > 1) {
-    for (const t of tokens) {
-      must.push({ $or: [titleClause(t), textClause(t)] });
-    }
+  // A term is a *mention*: it must appear in the title or the body. We don't
+  // match it against the author handle — for a trend line "who posted it" is
+  // noise (and a stray `{ by: "openai" }` in the snippet just confuses).
+  const tokenArms = tokens.map(
+    (t) => ({ $or: [titleClause(t), textClause(t)] }) as Record<string, unknown>,
+  );
+
+  // Multi-word phrase boost: fold an adjacent-phrase title clause into the FIRST
+  // token's $or. It can't sit as its own top-level arm ($and and $or can't be
+  // siblings at one level), and folding it here is exactly equivalent for
+  // scoring — the arm still requires that token, and a phrase match implies it.
+  // Single-token queries have no phrase to boost, so we skip them.
+  if (opts?.phraseBoost && tokens.length > 1) {
+    (tokenArms[0].$or as unknown[]).push({
+      title: { $phrase: q.trim(), $boost: PHRASE_BOOST },
+    });
   }
+  must.push(...tokenArms);
 
   if (from || to) {
     const range: Record<string, string> = {};
@@ -136,10 +165,24 @@ export type SearchArgsOpts = {
   type?: string;
 };
 
+// Relevance ranking weights. finalScore = BM25(text relevance, phrase-boosted)
+//   + POINTS_FACTOR * log1p(upvotes)
+//   + COMMENTS_FACTOR * log1p(comment count)
+// Tuned over many example queries (scripts/eval-relevance.ts). Points lead
+// comments so a quietly-upvoted post isn't buried, but comments matter enough
+// to surface the genuinely-*discussed* threads a pure-upvote sort misses — e.g.
+// `rust` then leads with "A Sad Day for Rust" / "Rust Moderation Team Resigns"
+// (800–1200 upvotes but 800–1000 comments) instead of just "Announcing Rust 1.0".
+const POINTS_FACTOR = 50;
+const COMMENTS_FACTOR = 30;
+
 /** Build the SEARCH.QUERY command args (everything after the verb). */
 export function buildSearchArgs(opts: SearchArgsOpts): (string | number)[] {
   const { q, sort, limit = 30, from, to, by, type } = opts;
-  const filter = buildFilter(q, from, to, by, type);
+  // phraseBoost only affects the relevance ORDER, so only build it in for that.
+  const filter = buildFilter(q, from, to, by, type, {
+    phraseBoost: sort === "relevance",
+  });
   const args: (string | number)[] = [
     "search.query",
     "hn",
@@ -152,22 +195,33 @@ export function buildSearchArgs(opts: SearchArgsOpts): (string | number)[] {
       sort === "score" ? "score" : sort === "recent" ? "time" : "ndesc";
     args.push("ORDERBY", field, "DESC");
   } else if (q.trim()) {
-    // Hybrid ranking: BM25 + 50*log1p(upvotes). Without this, plain BM25 ranks
-    // five different posts literally titled "Bitcoin" (1-2 upvotes each) above
-    // the well-discussed ones. log1p has diminishing returns so a 1000-upvote
-    // story isn't ~100x a 10-upvote one, and SUM keeps comments (score=0)
-    // visible — they fall back to pure BM25 ranking. Mutually exclusive with
-    // ORDERBY, so we skip it when the user picked a different sort.
+    // Hybrid ranking: BM25 + upvote + comment signals, SUMmed onto the text
+    // relevance (SCOREMODE sum) and combined with each other (COMBINEMODE sum).
+    // Without any signal, plain BM25 ranks five different posts literally titled
+    // "Bitcoin" (1-2 upvotes each) above the well-discussed ones. log1p has
+    // diminishing returns so a 1000-upvote story isn't ~100x a 10-upvote one,
+    // and SUM keeps low-score comments visible (they fall back to BM25 + their
+    // comment count). Mutually exclusive with ORDERBY, so we skip it when the
+    // user picked a different sort. Only `.fast()` numeric fields work here, and
+    // both `score` and `ndesc` are indexed that way.
     args.push(
       "SCOREFUNC",
       "SCOREMODE",
+      "sum",
+      "COMBINEMODE",
       "sum",
       "FIELDVALUE",
       "score",
       "MODIFIER",
       "log1p",
       "FACTOR",
-      50,
+      POINTS_FACTOR,
+      "FIELDVALUE",
+      "ndesc",
+      "MODIFIER",
+      "log1p",
+      "FACTOR",
+      COMMENTS_FACTOR,
     );
   }
   return args;
@@ -201,20 +255,23 @@ export function buildAggregateArgs(opts: AggregateArgsOpts): (string | number)[]
  * panel is to show how little code this *is* with `@upstash/redis`. These
  * builders produce the equivalent SDK calls from the exact same opts, so what
  * the panel shows always matches the query the UI just ran. The filter object
- * is literally what `buildFilter` returns — the SDK takes the same JSON DSL.
+ * is literally what `buildFilter` returns, and the SDK takes the same JSON DSL.
  */
 
-/** A value is "inlineable" — kept on one line — if it's a primitive, a flat
+/** A value is "inlineable", kept on one line, if it's a primitive, a flat
  *  array of primitives, or a small object (≤2 keys) of primitives. This is what
  *  lets `{ $eq: "bitcoin", $boost: 5 }` stay horizontal instead of exploding
  *  into a tall column. Mirrors the data browser's `toJsLiteral` formatter. */
-const MAX_INLINE_KEYS = 2;
+// 3 so a scoreFunc field — `{ field: "score", modifier: "log1p", factor: 50 }` —
+// stays on one line like the docs show, alongside the 2-key `{ $eq, $boost }`
+// clauses. No other object in any emitted snippet has 3 primitive keys.
+const MAX_INLINE_KEYS = 3;
 function isInlineable(v: unknown): boolean {
   if (typeof v !== "object" || v === null) return true;
   // Arrays of objects always get their own block; flat arrays can inline.
   if (Array.isArray(v)) return v.every((x) => typeof x !== "object" || x === null);
-  // Recurse on object values so a single-key wrapper around a small object —
-  // `{ title: { $eq: "x", $boost: 5 } }` — stays on one line.
+  // Recurse on object values so a single-key wrapper around a small object,
+  // `{ title: { $eq: "x", $boost: 5 } }`, stays on one line.
   const entries = Object.entries(v as Record<string, unknown>);
   return entries.length <= MAX_INLINE_KEYS && entries.every(([, x]) => isInlineable(x));
 }
@@ -231,7 +288,7 @@ function fmtJs(v: unknown, indent = 0): string {
   if (Array.isArray(v)) {
     if (v.length === 0) return "[]";
     // Only collapse arrays of primitives. An array of objects (e.g. the $or
-    // arms) gets one element per line — each element still inlines on its own,
+    // arms) gets one element per line, each element still inlines on its own,
     // which avoids one absurdly long line while staying compact.
     const allPrimitive = v.every((x) => typeof x !== "object" || x === null);
     if (allPrimitive) {
@@ -243,7 +300,7 @@ function fmtJs(v: unknown, indent = 0): string {
 
   const entries = Object.entries(v as Record<string, unknown>);
   if (entries.length === 0) return "{}";
-  // Never inline the root object — the top-level call reads best expanded.
+  // Never inline the root object; the top-level call reads best expanded.
   if (
     indent > 0 &&
     entries.length <= MAX_INLINE_KEYS &&
@@ -268,7 +325,9 @@ function fmtKey(k: string): string {
 export function searchSnippet(opts: SearchArgsOpts): string {
   const { q, sort, limit = 30, from, to, by, type } = opts;
   const options: Record<string, unknown> = {
-    filter: buildFilter(q, from, to, by, type),
+    filter: buildFilter(q, from, to, by, type, {
+      phraseBoost: sort === "relevance",
+    }),
     limit,
   };
   let note = "";
@@ -277,21 +336,58 @@ export function searchSnippet(opts: SearchArgsOpts): string {
       sort === "score" ? "score" : sort === "recent" ? "time" : "ndesc";
     options.orderBy = { [field]: "DESC" };
   } else if (q.trim()) {
-    // Same hybrid rank as buildSearchArgs: BM25 + 50·log1p(upvotes).
+    // Same hybrid rank as buildSearchArgs: BM25 + upvote + comment signals.
     options.scoreFunc = {
-      field: "score",
-      modifier: "log1p",
-      factor: 50,
+      fields: [
+        { field: "score", modifier: "log1p", factor: POINTS_FACTOR },
+        { field: "ndesc", modifier: "log1p", factor: COMMENTS_FACTOR },
+      ],
+      combineMode: "sum",
       scoreMode: "sum",
     };
-    note = "// rank by relevance, boosted by upvotes\n";
+    note = "// rank by relevance, boosted by upvotes + comments\n";
+  }
+  // Annotate the scoreFunc block with the one-line formula it encodes, keeping
+  // the leading whitespace ($1) so the comment lines up with the key it sits on.
+  let body = fmtJs(options);
+  if (sort === "relevance" && q.trim()) {
+    body = body.replace(
+      /(\n\s*)scoreFunc:/,
+      `$1// finalScore = relevance + ${POINTS_FACTOR}*log1p(score) + ${COMMENTS_FACTOR}*log1p(ndesc)$1scoreFunc:`,
+    );
   }
   return (
     `const hn = redis.search.index({ name: "hn", schema });\n\n` +
     note +
-    `const { documents } = await hn.query(${fmtJs(options)});\n\n` +
+    `const { documents } = await hn.query(${body});\n\n` +
     `// fully type-safe\n` +
     `documents[0].title;`
+  );
+}
+
+/** The bare date-histogram that draws a gallery trend line, no author/type
+ *  facets, since the /examples sparklines only plot the monthly counts. Shown
+ *  in the landing page's "code for this part" panel as the simplest possible
+ *  aggregate: one filter, one `$dateHistogram`. */
+export function histogramSnippet(term: string): string {
+  // Hand-expand the aggregations block over several lines (fmtJs would collapse
+  // the single `by_month` onto one long line that crops in the narrow landing
+  // column). The filter still goes through fmtJs so it can't drift.
+  const filter = fmtJs(buildFilter(term), 1);
+  return (
+    `const hn = redis.search.index({ name: "hn", schema });\n\n` +
+    `// one date-histogram per term, overlay the lines to compare\n` +
+    `const { aggregations } = await hn.aggregate({\n` +
+    `  filter: ${filter},\n` +
+    `  aggregations: {\n` +
+    `    by_month: {\n` +
+    `      $dateHistogram: {\n` +
+    `        field: "time",\n` +
+    `        fixedInterval: "30d",\n` +
+    `      },\n` +
+    `    },\n` +
+    `  },\n` +
+    `});`
   );
 }
 
@@ -346,8 +442,8 @@ export function encodePath(parts: (string | number)[]): string {
 
 /**
  * Build the command args from request query params (`?op=&q=&sort=&…`). Used by
- * the live `/api/hn` edge proxy so the wire contract — and the resulting Redis
- * command — is defined in one place.
+ * the live `/api/hn` edge proxy so the wire contract (and the resulting Redis
+ * command) is defined in one place.
  */
 export function argsFromParams(p: URLSearchParams): (string | number)[] {
   const op = (p.get("op") as "search" | "aggregate") ?? "search";

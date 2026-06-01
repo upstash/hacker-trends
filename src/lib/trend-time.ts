@@ -16,7 +16,7 @@ export const SLOTS = Math.max(1, Math.round((MAX_MS - MIN_MS) / MONTH_MS));
 /** Slot index a bucket key (epoch-ms) falls in. */
 export const slotOf = (ms: number) => Math.round((ms - MIN_MS) / MONTH_MS);
 
-/** A single slot's [from, to) window — aligned to the 30d histogram buckets so
+/** A single slot's [from, to) window, aligned to the 30d histogram buckets so
  *  a selected range matches the bar it covers exactly. */
 export const slotRange = (i: number): { fromMs: number; toMs: number } => ({
   fromMs: MIN_MS + i * MONTH_MS,

@@ -7,10 +7,10 @@
  *   - total      : sum of monthly docCounts (overall volume)
  *   - span       : first/last non-empty month (does the index even cover it?)
  *   - peakMax    : the single biggest month
- *   - peaks      : # of distinct spikes — clusters of consecutive months that
+ *   - peaks      : # of distinct spikes: clusters of consecutive months that
  *                  rise above max(peakFloor, PEAK_FRAC * peakMax), so a steady
  *                  plateau counts as ONE peak, not many.
- *   - peakiness  : peakMax / median(non-zero months) — spiky vs flat.
+ *   - peakiness  : peakMax / median(non-zero months): spiky vs flat.
  *
  * We want HIGH total, peaks >= 2, and high peakiness. Output is sorted so the
  * best multi-peak candidates float to the top.
@@ -56,7 +56,7 @@ function buildFilter(q: string): Record<string, unknown> {
   if (tokens.length === 0) return {};
   if (tokens.length === 1) {
     const t = tokens[0];
-    return { $or: [titleClause(t), textClause(t), { by: t }] };
+    return { $or: [titleClause(t), textClause(t)] };
   }
   return { $and: tokens.map((t) => ({ $or: [titleClause(t), textClause(t)] })) };
 }

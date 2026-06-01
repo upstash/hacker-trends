@@ -35,6 +35,15 @@ a.subtle, a.subtle:visited { color: var(--hn-subtle); }
 .bar:hover { fill: #d35400; cursor: pointer; }
 .bar.active { fill: #000000; }
 
+/* The trend chart stretches to fill the column (preserveAspectRatio="none"), so
+   on a narrow phone the 18-year x-axis gets compressed against a tall box and
+   every spike looks horizontally squished. A shorter box on mobile keeps the
+   width:height ratio closer to the wide desktop one, so the lines read right. */
+.trend-svg { height: 220px; }
+@media (max-width: 640px) {
+  .trend-svg { height: 150px; }
+}
+
 /* The thin orange header bar */
 .hn-header {
   background: var(--hn-orange);
@@ -49,30 +58,20 @@ a.subtle, a.subtle:visited { color: var(--hn-subtle); }
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
-  justify-content: center;
+  gap: 4px;
   background: transparent;
   border: 0;
   color: #000;
-  padding: 2px;
-  line-height: 0;
+  padding: 2px 0;
+  font-family: Verdana, Geneva, sans-serif;
+  font-size: 10px;
+  font-weight: 700;
   cursor: pointer;
   opacity: 0.7;
 }
-.share-link:hover { opacity: 1; }
+.share-link:hover { opacity: 1; text-decoration: underline; }
 .share-link[data-copied="true"] { opacity: 1; }
 .share-link svg { display: block; }
-
-/* "explore examples" CTA at the end of the try: row → /examples gallery */
-.explore-examples {
-  flex: 0 0 auto;
-  background: var(--hn-orange);
-  color: #fff;
-  font-weight: 700;
-  padding: 1px 7px;
-  white-space: nowrap;
-  text-decoration: none;
-}
-.explore-examples:hover { filter: brightness(0.92); }
 
 /* The "T" logo box */
 .hn-logo {
@@ -140,6 +139,61 @@ input.hn-input:focus { border-color: var(--hn-orange); }
   opacity: 0.4;
   cursor: not-allowed;
   text-decoration: line-through;
+}
+/* divider between the sort tabs and the "only comments" filter-tab */
+.tab-divider {
+  width: 1px;
+  align-self: stretch;
+  margin: 2px 4px;
+  background: var(--hn-subtle);
+  opacity: 0.4;
+}
+
+/* clickable relative-time stamp in result rows: reads like the subtle meta text
+   but filters to that month on click */
+.time-ago {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.time-ago:hover {
+  color: #000;
+  text-decoration: underline;
+}
+
+/* Preset view-window control sitting above the chart (All / 10y / 5y / …). */
+.win-bar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+  padding: 4px 6px 0;
+}
+.win-label {
+  font-size: 9px;
+  color: var(--hn-subtle);
+  margin-right: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.win-tab {
+  background: transparent;
+  border: 1px solid transparent;
+  font-family: Verdana, Geneva, sans-serif;
+  font-size: 9px;
+  color: var(--hn-subtle);
+  padding: 1px 6px;
+  cursor: pointer;
+}
+.win-tab:hover { color: #000; }
+.win-tab[data-active="true"] {
+  color: #000;
+  background: #fff;
+  border-color: var(--hn-subtle);
+  font-weight: 700;
 }
 
 /* --- Hacker Trends: compare-input chips + result tabs ------------------- */
@@ -235,15 +289,76 @@ input.hn-input:focus { border-color: var(--hn-orange); }
 .facet-row::-webkit-scrollbar-track { background: transparent; }
 .facet-row .facet-pick { display: inline-block; }
 
+/* --- result filters row ("only show from …", comments only, top authors) --- */
+.filters-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  font-size: 10px;
+}
+.filters-label {
+  color: var(--hn-subtle);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 9px;
+}
+/* a clear on/off pill — "only <term>" / "comments only" */
+.filter-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: #fff;
+  border: 1px solid var(--hn-subtle);
+  border-left-width: 3px;
+  color: var(--hn-subtle);
+  font-family: Verdana, Geneva, sans-serif;
+  font-size: 9px;
+  padding: 2px 7px;
+  cursor: pointer;
+}
+.filter-toggle:hover { color: #000; }
+.filter-toggle[data-active="true"] {
+  background: #ffe1cc;
+  color: #000;
+  font-weight: 700;
+}
+/* the author sub-list sits to the right, kept subtle; wraps with the row */
+.filters-authors {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  min-width: 0;
+}
+.filters-authors .facet-pick { font-size: 10px; }
+
+/* "Show more" expander under the result preview */
+.lot-more {
+  display: block;
+  margin: 6px 0 2px 32px;
+  background: transparent;
+  border: 0;
+  padding: 2px 0;
+  font-family: Verdana, Geneva, sans-serif;
+  font-size: 9pt;
+  color: var(--hn-orange);
+  cursor: pointer;
+}
+.lot-more:hover { text-decoration: underline; }
+
 /* --- "Show the code" panel --------------------------------------------- */
 .code-panel { border: 1px solid var(--hn-subtle); background: #fff; }
 
-/* Header bar: toggle on the left, "powered by" pinned to the right. */
+/* Header bar: toggle on the left, "powered by" pinned to the right. On a phone
+   the row can't hold both, so it wraps — the toggle keeps its own line and the
+   github + "powered by" links drop, right-aligned, to the next line (rather than
+   the toggle text crushing into a ragged 4-line column). */
 .code-head {
   display: flex;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 4px 8px;
   background: var(--hn-bg);
   padding: 4px 8px;
 }
@@ -252,6 +367,8 @@ input.hn-input:focus { border-color: var(--hn-orange); }
   display: flex;
   align-items: baseline;
   gap: 6px;
+  flex: 0 0 auto;
+  white-space: nowrap;
   background: transparent;
   border: 0;
   padding: 1px 0;
@@ -327,7 +444,7 @@ input.hn-input:focus { border-color: var(--hn-orange); }
 .code-pre .tok-keyword { color: #cf222e; }
 .code-pre .tok-op { color: #bf4d00; font-weight: 700; }
 
-/* /examples gallery — categorized wall of clickable mini-histograms */
+/* /examples gallery: categorized wall of clickable mini-histograms */
 .gallery-section { scroll-margin-top: 6px; }
 .toc-link { color: var(--hn-orange); text-decoration: none; white-space: nowrap; }
 .toc-link:hover { text-decoration: underline; }
@@ -354,3 +471,29 @@ input.hn-input:focus { border-color: var(--hn-orange); }
 .mini-trend-hint, .mini-trend-hover { font-size: 8px; color: var(--hn-subtle); }
 .mini-trend-svg { width: 100%; height: 38px; display: block; user-select: none; touch-action: none; }
 .mini-trend-story { font-size: 9px; line-height: 1.3; color: var(--hn-subtle); margin-top: 3px; }
+
+/* landing "code for this part": index + histogram side by side */
+.code-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  align-items: start;
+  padding: 8px;
+}
+@media (max-width: 720px) {
+  .code-cols { grid-template-columns: 1fr; }
+}
+.code-col {
+  border: 1px solid var(--hn-subtle);
+  background: #fff;
+  min-width: 0;
+}
+.code-col-label {
+  padding: 3px 8px;
+  border-bottom: 1px solid #eee;
+  background: #fafaf7;
+  font-size: 8.5pt;
+  font-weight: 700;
+  color: var(--hn-subtle);
+}
+.code-col .code-pre { font-size: 8.5pt; }

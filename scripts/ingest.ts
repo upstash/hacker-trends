@@ -2,7 +2,7 @@
  * Stream a Hacker News monthly Parquet file from HuggingFace and HSET each
  * eligible item into Upstash Redis, batched through the pipeline endpoint.
  *
- * Before ingesting, this also creates the `hn` Redis Search index (idempotent —
+ * Before ingesting, this also creates the `hn` Redis Search index (idempotent;
  * skipped if it already exists). RediSearch indexes both existing and future
  * keys matching the `hn:` prefix, so the hashes written below are picked up
  * automatically.
@@ -54,7 +54,7 @@ async function ensureIndex(): Promise<void> {
     console.log(`index "${INDEX_NAME}" created`);
   } catch (e) {
     const msg = (e as Error).message ?? String(e);
-    // Already-created index is fine — we only need to guarantee it exists.
+    // Already-created index is fine, we only need to guarantee it exists.
     if (/already exists/i.test(msg)) {
       console.log(`index "${INDEX_NAME}" already exists, skipping create`);
     } else {
@@ -127,7 +127,7 @@ function rowToHash(r: HnRow): Record<string, string | number> | null {
       ndesc: r.descendants ?? 0,
       parent: 0,
     };
-    // Some stories (Ask HN, Show HN) also have body text — index it.
+    // Some stories (Ask HN, Show HN) also have body text, so index it.
     if (r.text) {
       const txt = cleanText(r.text);
       if (txt) out.text = txt;
@@ -154,7 +154,7 @@ function rowToHash(r: HnRow): Record<string, string | number> | null {
     };
   }
 
-  // Skip pollopt — they don't carry meaningful searchable content.
+  // Skip pollopt, they don't carry meaningful searchable content.
   return null;
 }
 
@@ -292,7 +292,7 @@ async function ingestMonth(year: string, month: string) {
 // Catch unhandled rejections from the inflight pipeline promises so a single
 // transient error doesn't tear the whole process down. flushBatch already
 // retries on transients, so reaching here means the month-level await also
-// rethrew — log and continue.
+// rethrew; log and continue.
 process.on("unhandledRejection", (reason) => {
   console.error("unhandledRejection (ignoring):", String(reason).slice(0, 200));
 });

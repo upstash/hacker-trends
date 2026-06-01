@@ -9,18 +9,28 @@
  *   - the gallery page (`/examples`), which renders a section per group with a
  *     table-of-contents that jumps to each `id`.
  *
- * Every term was vetted with scripts/probe-trends.ts (and two probe-driven
+ * Every term was vetted with scripts/probe-trends.ts (and several probe-driven
  * discovery sweeps) for VOLUME + multiple tall, distinct spikes ("peakiness").
  * Flat high-volume words (open source, hiring, privacy, react on its own,
  * enshittification @1.8) are deliberately excluded so each line tells a story.
  * The A-vs-B pairs were chosen so the two overlaid lines show a crossover,
- * succession, or rivalry — not two unrelated wobbles.
+ * succession, or rivalry, not two unrelated wobbles.
+ *
+ * v4 sweep expanded the thin "general" sections (Internet & culture, Dev
+ * culture, Industry zeitgeist) and added FOUR new categories: Science &
+ * frontier tech, Open-source license wars, Gaming, and Health & longevity,
+ * each vetted with the same peaks>=2 / spiky-not-flat bar (a handful of iconic
+ * single-spike events, like lk-99 or the React BSD+Patents license fight, were
+ * kept on the strength of one famous datable moment). Polluted candidates were
+ * dropped: "threads" (programming threads, not Meta Threads), "pip" (the Python
+ * packager, not the HR plan), "p(doom)" (tokenizes to Doom the game), "hims"
+ * ("him" pronoun), "iter" (iterators, not the fusion reactor), "fork" (flat).
  *
  * CACHE NOTE: bump CATALOG_VERSION whenever the terms below change, so the
  * cached Redis key is recomputed instead of serving a stale/short set.
  */
 
-export const CATALOG_VERSION = "v2";
+export const CATALOG_VERSION = "v5";
 
 export type ExampleGroup = {
   /** anchor id used by the table of contents (#people, #ai, …) */
@@ -73,9 +83,9 @@ export const EXAMPLE_GROUPS: ExampleGroup[] = [
   {
     id: "jsframeworks",
     title: "JS frameworks",
-    blurb: "How JavaScript frameworks come and go — each era's darling, in order.",
+    blurb: "How JavaScript frameworks come and go: each era's darling, in order.",
     terms: [
-      "prototype.js", "jquery", "backbone", "ember", "meteor", "angularjs",
+      "jquery", "backbone", "ember", "meteor", "angularjs",
       "react", "vue", "svelte", "htmx", "astro",
     ],
   },
@@ -85,8 +95,18 @@ export const EXAMPLE_GROUPS: ExampleGroup[] = [
     blurb: "Launches, acquisitions, license blow-ups and the occasional implosion.",
     terms: [
       "figma", "substack", "coinbase", "discord", "signal", "reddit",
-      "theranos", "wework", "nvidia", "amd", "cloudflare", "heroku", "palantir",
-      "hashicorp", "redis", "snowflake", "databricks", "fly.io",
+      "theranos", "wework", "nvidia", "amd", "palantir",
+      "hashicorp", "redis", "snowflake", "databricks",
+    ],
+  },
+  {
+    id: "cloud",
+    title: "Cloud & hosting",
+    blurb: "The platforms we deploy on: hyperscalers, PaaS darlings and indie hosts, each with its own outage-and-launch rhythm.",
+    terms: [
+      "aws", "google cloud", "azure", "cloudflare", "heroku", "vercel",
+      "netlify", "fly.io", "digitalocean", "linode", "hetzner", "rackspace",
+      "firebase", "supabase",
     ],
   },
   {
@@ -114,7 +134,9 @@ export const EXAMPLE_GROUPS: ExampleGroup[] = [
     blurb: "Platform exoduses, federated protocols and moderation flashpoints.",
     terms: [
       "mastodon", "bluesky", "fediverse", "activitypub", "content moderation",
-      "piracy", "nostr",
+      "piracy", "nostr", "x rebrand", "rss", "ad blocker", "dark patterns",
+      "cookie banner", "digg", "clubhouse", "deplatforming", "shadowban",
+      "right to be forgotten", "age verification",
     ],
   },
   {
@@ -123,7 +145,10 @@ export const EXAMPLE_GROUPS: ExampleGroup[] = [
     blurb: "The perennial HN arguments that resurface in waves, year after year.",
     terms: [
       "monorepo", "github actions", "tdd", "scrum", "whiteboard interview",
-      "10x engineer", "npm", "leftpad", "linux gaming",
+      "10x engineer", "npm", "leftpad", "linux gaming", "microservices",
+      "serverless", "yaml", "technical debt", "agile", "waterfall",
+      "pair programming", "code review", "semantic versioning", "conway's law",
+      "rust rewrite",
     ],
   },
   {
@@ -133,7 +158,48 @@ export const EXAMPLE_GROUPS: ExampleGroup[] = [
     terms: [
       "layoffs", "recession", "ai bubble", "h1b", "censorship", "antitrust",
       "right to repair", "return to office", "burnout", "leetcode", "tiktok",
-      "section 230",
+      "section 230", "zirp", "founder mode", "quiet quitting",
+      "the great resignation", "soft landing", "ai winter", "gig economy",
+      "hustle culture", "four day week", "unionization",
+    ],
+  },
+  {
+    id: "science",
+    title: "Science & frontier tech",
+    blurb: "Lab breakthroughs and moonshots: the spikes that briefly made HN a physics forum.",
+    terms: [
+      "lk-99", "room temperature superconductor", "fusion energy",
+      "james webb", "gravitational waves", "crispr", "quantum computing",
+      "neuralink", "boston dynamics", "humanoid robot", "self-driving car",
+    ],
+  },
+  {
+    id: "licenses",
+    title: "Open-source license wars",
+    blurb: "Relicensings, rug-pulls and the forks they spawned: each one a datable tower of outrage.",
+    terms: [
+      "open core", "react license", "audacity", "elastic license", "sspl",
+      "mongodb license", "terraform", "hashicorp license", "opentofu",
+      "redis license", "valkey",
+    ],
+  },
+  {
+    id: "gaming",
+    title: "Gaming",
+    blurb: "Launch-day mania, GPU-scalping rage and the occasional licensing revolt.",
+    terms: [
+      "steam", "valve", "unity", "godot", "minecraft", "elden ring",
+      "factorio", "gpu prices", "nintendo", "speedrun", "denuvo",
+    ],
+  },
+  {
+    id: "health",
+    title: "Health & longevity",
+    blurb: "The biohacking, GLP-1 and sleep-optimization waves HN can't stop relitigating.",
+    terms: [
+      "ozempic", "semaglutide", "glp-1", "longevity", "intermittent fasting",
+      "creatine", "melatonin", "nicotine", "standing desk", "blue light",
+      "vitamin d", "circadian rhythm",
     ],
   },
 ];
@@ -150,8 +216,8 @@ export type Comparison = {
 // peaks are COMPARABLE in size (so no line goes flat on the shared y-axis) but
 // OFFSET in time (so the lead visibly swaps). Each was verified to have
 // min(peakMax)/max(peakMax) >= ~0.25 with offset peak months. Pairs where one
-// term dwarfs the other — myspace/facebook, digg/reddit, subversion/git,
-// bitcoin/ethereum, twitter/mastodon, jquery/react, hadoop/spark — were dropped:
+// term dwarfs the other (myspace/facebook, digg/reddit, subversion/git,
+// bitcoin/ethereum, twitter/mastodon, jquery/react, hadoop/spark) were dropped:
 // the small line just hugged the floor. Terms are ordered earliest-peak first,
 // so the color order (COMPARE_COLORS) reads left→right in time.
 //
@@ -164,11 +230,31 @@ export type Comparison = {
 // Triples that failed it were rejected: internet-explorer/firefox/chrome (IE
 // @0.06), iphone/android/blackberry (@0.15), flux/redux/mobx (@0.15),
 // elasticsearch/solr/algolia (@0.13), bootstrap/sass/tailwind (@0.21).
+//
+// v3 sweep added more triples (selenium/cypress/playwright, xamarin/react-native/
+// flutter, phonegap/cordova/capacitor, parcel/esbuild/rollup, prometheus/grafana/
+// datadog, redshift/databricks/snowflake, llama/mistral/qwen, siri/google-assistant/
+// alexa, litecoin/dogecoin/solana, ico/nft/defi), each verified for the >= ~0.25
+// floor AND offset peak months (single tallest month per term must differ, so the
+// lead actually swaps). Candidates rejected this round:
+// evernote/notion/obsidian (peaks all cluster 2023, no historical handoff),
+// whatsapp/telegram/signal (whatsapp & signal share the Jan-2021 exodus month +
+// "signal" pollution), mongodb/dynamodb/firebase (all peak 2020-05), soap/rest-api/
+// graphql ("soap" tallest month is 2020-03 COVID handwashing, not the protocol),
+// jekyll/hugo/gatsby ("gatsby" tallest month is 2011-01 movie pollution + clustered),
+// aws/azure/gcp (gcp @0.10, aws dwarfs), bash/zsh/fish (zsh @0.13 + "fish" pollution),
+// objective-c/swift/kotlin (@0.18), go/rust/zig (@0.03), npm/yarn/pnpm (@0.07),
+// hadoop/spark/flink (@0.08), windows-phone/blackberry/android (@0.14, android dwarfs).
+//
+// A few entries below were added by request rather than by the sweep and don't
+// fully meet the bar: skype/zoom/microsoft-teams (Teams @0.13 hugs the floor next
+// to Zoom's March-2020 tower) and cpu/ram/gpu (high-volume staples that wobble
+// more than they spike). Kept on purpose because the matchup itself is the point.
 export const COMPARISONS: Comparison[] = [
   {
     terms: ["openai", "anthropic"],
     story:
-      "David vs Goliath of the lab era: OpenAI's repeated towers lead from 2023 — until a sudden 2026 Anthropic surge pulls level and the lead changes hands.",
+      "David vs Goliath of the lab era: OpenAI's repeated towers lead from 2023, until a sudden 2026 Anthropic surge pulls level and the lead changes hands.",
   },
   {
     terms: ["amd", "nvidia"],
@@ -206,9 +292,9 @@ export const COMPARISONS: Comparison[] = [
       "Crypto-exchange lead-swap: Coinbase is the exchange people talk about through 2013–21, then Binance takes over the headlines in 2022–23.",
   },
   {
-    terms: ["emacs", "zed"],
+    terms: ["vim", "emacs", "zed"],
     story:
-      "An editor generational handoff: Emacs holds steady editor-war attention through the mid-2010s, then Zed bursts in and spikes hard across 2024–26.",
+      "The editor wars, old guard vs new: Vim and Emacs trade the modal-vs-extensible argument year after year, then Zed bursts in and spikes hard across 2024–26.",
   },
   {
     terms: ["mastodon", "bluesky"],
@@ -223,7 +309,7 @@ export const COMPARISONS: Comparison[] = [
   {
     terms: ["flash", "html5"],
     story:
-      "A textbook changing of the guard: Flash burns hot across 2010–11, then HTML5 climbs past it into 2014–15 — the open web eating the plugin alive.",
+      "A textbook changing of the guard: Flash burns hot across 2010–11, then HTML5 climbs past it into 2014–15, the open web eating the plugin alive.",
   },
   {
     terms: ["docker", "kubernetes"],
@@ -238,7 +324,7 @@ export const COMPARISONS: Comparison[] = [
   {
     terms: ["chatgpt", "deepseek"],
     story:
-      "Two AI shockwaves, offset: ChatGPT's late-2022 launch wall, then DeepSeek's lone Jan-2025 tower — the “Sputnik moment” years later.",
+      "Two AI shockwaves, offset: ChatGPT's late-2022 launch wall, then DeepSeek's lone Jan-2025 tower, the “Sputnik moment” years later.",
   },
   {
     terms: ["coffeescript", "typescript"],
@@ -256,19 +342,14 @@ export const COMPARISONS: Comparison[] = [
       "A CPU-architecture shift: x86 dominates chip talk around 2020–23, then ARM surges with Apple Silicon and data-center ARM into 2024–26.",
   },
   {
-    terms: ["slack", "microsoft teams"],
-    story:
-      "Workplace-chat lead-swap: Slack defines team chat 2015–17, then Microsoft Teams surges with the 2020 remote-work wave.",
-  },
-  {
     terms: ["sublime", "atom", "vscode"],
     story:
       "The text-editor crown, passed hand to hand: Sublime Text is the beloved editor of 2012–14, GitHub's Atom takes over 2014–15, then VS Code eats the world from 2018 on.",
   },
   {
-    terms: ["skype", "zoom"],
+    terms: ["skype", "zoom", "microsoft teams"],
     story:
-      "A video-call dynasty toppled: Skype leads the 2010s, then Zoom spikes hard in the single March-2020 lockdown month and never looks back.",
+      "Video calling, dynasty to dynasty: Skype owns the 2010s, then Zoom spikes hard in the single March-2020 lockdown month while Microsoft Teams rides the same remote-work wave on Office's coattails.",
   },
   {
     terms: ["jenkins", "github actions"],
@@ -276,9 +357,9 @@ export const COMPARISONS: Comparison[] = [
       "CI changing of the guard: Jenkins is the CI tool of the mid-2010s, then GitHub Actions takes over from 2021 on.",
   },
   {
-    terms: ["cursor", "claude code"],
+    terms: ["cursor", "claude code", "codex"],
     story:
-      "The AI-coding-tool handoff: Cursor is the editor everyone talks about in late-2024, then Claude Code spikes hard across mid/late-2025.",
+      "The AI-coding-tool relay: Cursor is the editor everyone talks about in late-2024, Claude Code spikes hard across mid-2025, then OpenAI's Codex takes its turn into early-2026.",
   },
   {
     terms: ["chef", "puppet", "ansible"],
@@ -293,7 +374,7 @@ export const COMPARISONS: Comparison[] = [
   {
     terms: ["rest api", "grpc", "graphql"],
     story:
-      "API design, era by era: REST becomes the web's default 2012–15, then the post-REST generation splits — gRPC for service-to-service from 2016, GraphQL for the client from 2017.",
+      "API design, era by era: REST becomes the web's default 2012–15, then the post-REST generation splits: gRPC for service-to-service from 2016, GraphQL for the client from 2017.",
   },
   {
     terms: ["apache", "nginx", "caddy"],
@@ -303,12 +384,12 @@ export const COMPARISONS: Comparison[] = [
   {
     terms: ["backbone", "ember", "angular"],
     story:
-      "The front-end MVC wars: Backbone.js is the first to give the browser structure ~2011, then Ember and Angular escalate to full frameworks 2013–14 — the fight that set up React.",
+      "The front-end MVC wars: Backbone.js is the first to give the browser structure ~2011, then Ember and Angular escalate to full frameworks 2013–14, the fight that set up React.",
   },
   {
     terms: ["google glass", "oculus", "vision pro"],
     story:
-      "A decade of face-computer hype, one tower each: Google Glass in 2013, Oculus with the Facebook deal in 2014, then Apple's Vision Pro in 2024 — three spikes, ten years apart.",
+      "A decade of face-computer hype, one tower each: Google Glass in 2013, Oculus with the Facebook deal in 2014, then Apple's Vision Pro in 2024: three spikes, ten years apart.",
   },
   {
     terms: ["django", "ruby on rails", "laravel"],
@@ -329,6 +410,66 @@ export const COMPARISONS: Comparison[] = [
     terms: ["couchdb", "cassandra", "mongodb"],
     story:
       "The NoSQL boom in order: CouchDB rides the early document-store wave ~2009, Cassandra carries the scale-out story 2010–12, then MongoDB becomes the era's default 2011–13.",
+  },
+  {
+    terms: ["selenium", "cypress", "playwright"],
+    story:
+      "Browser test automation, three generations: Selenium is the way to drive a browser through the 2010s, Cypress reinvents it for the modern front-end ~2020, then Playwright pulls ahead and surges into 2025–26.",
+  },
+  {
+    terms: ["xamarin", "react native", "flutter"],
+    story:
+      "Cross-platform mobile, baton by baton: Xamarin carries the write-once dream ~2016, React Native takes over for the JS crowd 2017–18, then Flutter overtakes both and peaks into 2024.",
+  },
+  {
+    terms: ["phonegap", "cordova", "capacitor"],
+    story:
+      "The hybrid-app lineage, renamed each era: PhoneGap wraps web apps in a native shell ~2011, its open-source successor Cordova carries it 2014–15, then Capacitor inherits the job and spikes in 2024.",
+  },
+  {
+    terms: ["parcel", "esbuild", "rollup"],
+    story:
+      "The post-Webpack bundler scramble: Parcel's zero-config pitch lands ~2019, esbuild's Go-speed rewrite grabs attention 2021, then Rollup re-enters as the library bundler of choice into 2022.",
+  },
+  {
+    terms: ["prometheus", "grafana", "datadog"],
+    story:
+      "The observability stack, layer by layer: Prometheus owns metrics collection ~2020, Grafana takes the dashboards spotlight 2021, then Datadog rises as the all-in-one SaaS into 2023.",
+  },
+  {
+    terms: ["redshift", "databricks", "snowflake"],
+    story:
+      "The cloud data-platform relay: Redshift defines the cloud warehouse ~2017, Databricks rides the lakehouse pitch into 2021, then Snowflake becomes the era's default name by 2024.",
+  },
+  {
+    terms: ["llama", "mistral", "qwen"],
+    story:
+      "Open-weight LLMs, release by release: Llama opens the floodgates in early 2023, Mistral's European challenger surges late 2023, then Qwen carries the open-model crown into 2026.",
+  },
+  {
+    terms: ["siri", "google assistant", "alexa"],
+    story:
+      "Voice assistants across the decade: Siri arrives first with the iPhone 4S in 2011, Google Assistant takes a turn ~2018, then Alexa peaks into 2022: three spikes, years apart.",
+  },
+  {
+    terms: ["litecoin", "dogecoin", "solana"],
+    story:
+      "Altcoin generations: Litecoin is bitcoin's silver in the 2013 boom, Dogecoin spikes as the joke-coin of that same era, then Solana carries the next-gen-chain story into 2022.",
+  },
+  {
+    terms: ["ico", "nft", "defi"],
+    story:
+      "Crypto's serial manias: the ICO token-sale frenzy peaks in 2017, the NFT gold rush detonates in 2021, then DeFi carries the yield-farming hype into 2022.",
+  },
+  {
+    terms: ["unreal", "unity", "godot"],
+    story:
+      "Three game engines, one shared earthquake: all three spike together in the Sept-2023 Unity runtime-fee fiasco — Unity's self-inflicted blow-up, with Unreal and Godot surging the same month as developers threatened to jump ship.",
+  },
+  {
+    terms: ["cpu", "gpu", "ram"],
+    story:
+      "The eternal hardware trio: CPU and RAM are the staples HN has argued about since 2007, while GPU climbs out of the pack through the crypto-mining and deep-learning booms.",
   },
 ];
 

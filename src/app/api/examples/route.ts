@@ -1,5 +1,5 @@
 /**
- * Serves the /examples gallery data — one date-histogram per catalog term,
+ * Serves the /examples gallery data: one date-histogram per catalog term,
  * computed once and cached under a single Redis key. See `examples-data.ts`.
  *
  * GET /api/examples          → the cached blob (computes + caches on a miss)

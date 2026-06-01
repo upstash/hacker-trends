@@ -28,7 +28,7 @@ function buildFilter(q: string): Record<string, unknown> {
   const textClause = (t: string) => ({ text: { $eq: t } });
   if (tokens.length === 0) return {};
   if (tokens.length === 1)
-    return { $or: [titleClause(tokens[0]), textClause(tokens[0]), { by: tokens[0] }] };
+    return { $or: [titleClause(tokens[0]), textClause(tokens[0])] };
   return { $and: tokens.map((t) => ({ $or: [titleClause(t), textClause(t)] })) };
 }
 function kv(v: unknown): Record<string, unknown> {

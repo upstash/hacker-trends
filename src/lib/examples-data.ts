@@ -4,13 +4,13 @@
  * The gallery shows a date-histogram for ~150 terms. Running ~150 Upstash
  * aggregate queries on every page view would be absurd, so instead we run them
  * ONCE and cache the whole lot under a SINGLE Redis key (`examples:<version>`).
- * Every request after that is a single GET of that key — fast, and one round
+ * Every request after that is a single GET of that key: fast, and one round
  * trip instead of a hundred.
  *
  * Writing the cache needs a writable token; the deployed app uses a READ-ONLY
  * Upstash token, so the SET is best-effort (it silently no-ops in prod). The key
- * is primed once from a writable environment — locally via
- * `GET /api/examples?fresh=1`, or any env whose token can write — and prod then
+ * is primed once from a writable environment: locally via
+ * `GET /api/examples?fresh=1`, or any env whose token can write, and prod then
  * just reads it. If the key is ever missing, we still compute + return live so
  * the page never breaks; it just won't be cached until a writable env primes it.
  *
@@ -21,7 +21,7 @@
 import { buildAggregateArgs, parseAggregations } from "@/lib/hn-query";
 import { CATALOG_VERSION, allExampleTerms } from "@/lib/examples";
 
-/** Lean monthly point — just what the gallery sparklines plot. We drop the
+/** Lean monthly point: just what the gallery sparklines plot. We drop the
  *  histogram's `keyAsString` (an ISO string the mini-charts derive from `key`
  *  anyway) since it was ~55% of the cached blob's bytes. */
 export type MonthCount = { key: number; docCount: number };
@@ -106,7 +106,7 @@ async function compute(): Promise<ExamplesData> {
 /**
  * The gallery's data. Reads the single cache key; on a miss (or `fresh`)
  * recomputes all histograms and best-effort-writes the cache. Always returns
- * data — the cache is an optimization, never a hard dependency.
+ * data; the cache is an optimization, never a hard dependency.
  */
 export async function getExamplesData(opts?: {
   fresh?: boolean;

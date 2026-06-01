@@ -2,7 +2,7 @@
 
 import { useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { MIN_MS, MAX_MS, MONTH_MS, SLOTS, slotOf, slotRange } from "@/lib/trend-time";
+import { MIN_MS, MAX_MS, MONTH_MS, SLOTS, slotOf } from "@/lib/trend-time";
 
 const VIEW_W = 320;
 const VIEW_H = 70;
@@ -20,6 +20,9 @@ type Props = {
   series: MiniSeries[];
   /** optional one-liner under the chart (the comparison story) */
   story?: string;
+  /** When set, clicking the chart/title loads these terms IN PLACE (the page is
+   *  the search tool now) instead of navigating to a route. */
+  onPick?: (terms: string[]) => void;
 };
 
 const xOf = (ms: number) => ((ms - MIN_MS) / (MAX_MS - MIN_MS)) * VIEW_W;
@@ -37,28 +40,33 @@ function densify(buckets: MonthBucket[]): Float64Array {
   return dense;
 }
 
-/** `/?q=…(&q=…)` for these terms, with an optional selected month range. */
-function viewHref(terms: string[], range?: { fromMs: number; toMs: number }): string {
+/** `/?q=…(&q=…)` for these terms over the full history (no range filter). The
+ *  tool lives at the root now; this href is the no-JS / middle-click fallback,
+ *  while `onPick` (when provided) loads the terms in place. */
+function viewHref(terms: string[]): string {
   const sp = new URLSearchParams();
   for (const t of terms) sp.append("q", t);
-  if (range) {
-    sp.set("from", String(range.fromMs));
-    sp.set("to", String(range.toMs));
-  }
   return `/?${sp.toString()}`;
 }
 
 /**
- * A compact, clickable trend sparkline for the /examples gallery. Shares the
- * exact monthly time grid with the big chart (see trend-time.ts), so clicking a
- * month here lands on the main page with that same month pre-selected.
+ * A compact, clickable trend sparkline for the landing gallery. Shares the
+ * exact monthly time grid with the big chart (see trend-time.ts). Hovering
+ * inspects a month's counts; clicking anywhere opens the comparison.
  *
- *   - click the title   → main page comparing these term(s), full history
- *   - click a month     → main page with that month's range selected
+ *   - click title or chart → /search comparing these term(s), full history
+ *   - hover a month        → inline month + per-term counts (no navigation)
  */
-export function MiniTrend({ series, story }: Props) {
+export function MiniTrend({ series, story, onPick }: Props) {
   const router = useRouter();
   const terms = series.map((s) => s.term);
+  // Click loads the terms in place when the host passed `onPick` (the merged
+  // root page), else falls back to navigating to `/?q=…`.
+  const activate = () => {
+    if (!hasData) return;
+    if (onPick) onPick(terms);
+    else router.push(viewHref(terms));
+  };
   const svgRef = useRef<SVGSVGElement | null>(null);
   const [hoverSlot, setHoverSlot] = useState<number | null>(null);
 
@@ -95,18 +103,22 @@ export function MiniTrend({ series, story }: Props) {
     return Math.max(0, Math.min(VIEW_W, ((clientX - rect.left) / rect.width) * VIEW_W));
   };
 
-  const goToMonth = (clientX: number) => {
-    const slot = slotAtX(clientToView(clientX));
-    router.push(viewHref(terms, slotRange(slot)));
-  };
-
   const hoverMonth =
     hoverSlot == null ? null : new Date(MIN_MS + hoverSlot * MONTH_MS).toISOString().slice(0, 7);
 
   return (
     <div className="mini-trend">
       <div className="flex items-baseline justify-between gap-1.5 mb-0.5">
-        <a href={viewHref(terms)} className="mini-trend-title truncate min-w-0">
+        <a
+          href={viewHref(terms)}
+          className="mini-trend-title truncate min-w-0"
+          onClick={(e) => {
+            if (onPick) {
+              e.preventDefault();
+              activate();
+            }
+          }}
+        >
           {series.length === 1 ? (
             series[0].term
           ) : (
@@ -135,10 +147,10 @@ export function MiniTrend({ series, story }: Props) {
         viewBox={`0 0 ${VIEW_W} ${VIEW_H}`}
         preserveAspectRatio="none"
         className="mini-trend-svg"
-        style={{ cursor: hasData ? "crosshair" : "default" }}
+        style={{ cursor: hasData ? "pointer" : "default" }}
         onMouseMove={(e) => setHoverSlot(slotAtX(clientToView(e.clientX)))}
         onMouseLeave={() => setHoverSlot(null)}
-        onClick={(e) => hasData && goToMonth(e.clientX)}
+        onClick={activate}
       >
         {/* faint year guides at 2010 / 2015 / 2020 / 2025 */}
         {[2010, 2015, 2020, 2025].map((y) => {
