@@ -7,7 +7,7 @@ export const alt = "Hacker News mention trend";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
 
-const BARS = 56;
+const BARS = 96;
 
 /** Densify buckets to monthly slots, then downsample to BARS columns (summing),
  *  returning heights as 0–100 percentages of the series max. */
@@ -95,7 +95,7 @@ export default async function Image({
             marginTop: "auto",
             display: "flex",
             alignItems: "flex-end",
-            gap: 4,
+            gap: 3,
             height: 230,
           }}
         >

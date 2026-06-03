@@ -68,7 +68,7 @@ export default function OgImage() {
             display: "flex",
             alignItems: "flex-end",
             gap: 10,
-            height: 240,
+            height: 130,
           }}
         >
           {LINE_A.map((h, i) => (
@@ -84,7 +84,7 @@ export default function OgImage() {
         </div>
 
         <div style={{ marginTop: 24, fontSize: 26, color: "#828282" }}>
-          Live over 45M posts and comments · Powered by Upstash Redis Search
+          45M posts and comments · Powered by Upstash Redis Search
         </div>
       </div>
     ),

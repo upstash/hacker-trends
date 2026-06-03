@@ -432,11 +432,11 @@ export function HackerTrends({
           </a>
           . Below the chart sit the actual stories and comments behind the
           lines, filterable by term or author.{" "}
-          <Link
-            href="/how-it-works"
-            className="text-[color:var(--hn-orange)] whitespace-nowrap"
-          >
-            How it works ›
+          {/* Crawlable internal link, but visually hidden (sr-only): it stays
+              in the HTML for SEO/screen readers without surfacing the page to
+              regular visitors. */}
+          <Link href="/how-it-works" className="sr-only">
+            How Hacker Trends works
           </Link>
         </p>
       </div>
