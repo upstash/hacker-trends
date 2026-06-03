@@ -472,6 +472,13 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
 
   return (
     <div className="mx-auto" style={{ maxWidth: 1000 }}>
+      {/* The page's primary heading. Kept sr-only so the compact wordmark in the
+          header carries the visual brand, while crawlers and screen readers still
+          get a single, keyword-rich <h1> for the page. */}
+      <h1 className="sr-only">
+        Hacker Trends — see how any topic, tool, or person trended across 18
+        years of Hacker News
+      </h1>
       {/* Header bar -------------------------------------------------- */}
       <div className="hn-header flex items-center gap-2 px-2 py-[3px]">
         <span className="hn-logo">T</span>
@@ -575,7 +582,6 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
           to={toIso}
           by={byAuthor ?? undefined}
           type={commentsOnly ? "comment" : undefined}
-          termCount={activeTerms.length}
         />
       </div>
 

@@ -38,13 +38,9 @@ type Props = {
   to?: string;
   by?: string;
   type?: string;
-  /** How many terms are being compared. When >1, the app runs this query once
-   *  per term and merges the lists client-side, so we say so above the snippet
-   *  (which shows a single term's query). */
-  termCount?: number;
 };
 
-export function CodePanel({ q, sort, from, to, by, type, termCount = 1 }: Props) {
+export function CodePanel({ q, sort, from, to, by, type }: Props) {
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState<Tab>("query");
 
@@ -52,18 +48,8 @@ export function CodePanel({ q, sort, from, to, by, type, termCount = 1 }: Props)
     if (tab === "setup") return SETUP_SNIPPET;
     if (tab === "aggregate") return aggregateSnippet({ q, from, to });
     const snippet = searchSnippet({ q, sort, limit: 30, from, to, by, type });
-    // Each compared term is its own independent query (no `a OR b`); the UI
-    // fires them in parallel and merges by relevance. Make that explicit so the
-    // single-term snippet isn't mistaken for the whole story.
-    if (termCount > 1) {
-      return (
-        `// one query per compared term (${termCount}× here), run in parallel\n` +
-        `// and merged client-side — this is the query for a single term:\n` +
-        snippet
-      );
-    }
     return snippet;
-  }, [tab, q, sort, from, to, by, type, termCount]);
+  }, [tab, q, sort, from, to, by, type]);
 
   return (
     <div className="code-panel">

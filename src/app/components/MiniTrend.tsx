@@ -3,6 +3,7 @@
 import { memo, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { MIN_MS, MAX_MS, MONTH_MS, SLOTS, slotOf } from "@/lib/trend-time";
+import { landingHref } from "@/lib/site";
 
 const VIEW_W = 320;
 const VIEW_H = 70;
@@ -40,9 +41,9 @@ function densify(buckets: MonthBucket[]): Float64Array {
   return dense;
 }
 
-/** `/?q=…(&q=…)` for these terms over the full history (no range filter). The
- *  tool lives at the root now; this href is the no-JS / middle-click fallback,
- *  while `onPick` (when provided) loads the terms in place. */
+/** `/?q=…(&q=…)` for these terms over the full history (no range filter). Used
+ *  only as the in-place navigation fallback when no `onPick` is supplied; the
+ *  crawlable link target is the clean landing URL (`landingHref`). */
 function viewHref(terms: string[]): string {
   const sp = new URLSearchParams();
   for (const t of terms) sp.append("q", t);
@@ -119,7 +120,7 @@ export const MiniTrend = memo(function MiniTrend({ series, story, onPick }: Prop
     <div className="mini-trend">
       <div className="flex items-baseline justify-between gap-1.5 mb-0.5">
         <a
-          href={viewHref(terms)}
+          href={landingHref(terms)}
           className="mini-trend-title truncate min-w-0"
           onClick={(e) => {
             if (onPick) {

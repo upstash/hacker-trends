@@ -113,6 +113,26 @@ export function statsFor(buckets: MonthCount[]): TermStats {
   };
 }
 
+/** A plain-language, factual one-liner stating the headline numbers up front —
+ *  the sentence an LLM answer or a featured snippet can lift verbatim. Built
+ *  deterministically from the stats (no model), so it's always accurate. */
+export function trendSummary(term: string, stats: TermStats): string {
+  const display = term.charAt(0).toUpperCase() + term.slice(1);
+  if (stats.total === 0) {
+    return `“${display}” has no recorded Hacker News mentions in this index yet.`;
+  }
+  const span =
+    stats.firstYear && stats.lastYear
+      ? stats.firstYear === stats.lastYear
+        ? ` in ${stats.firstYear}`
+        : ` between ${stats.firstYear} and ${stats.lastYear}`
+      : "";
+  const peak = stats.peakLabel
+    ? `, peaking in ${stats.peakLabel} with ${stats.peakCount.toLocaleString()} that month`
+    : "";
+  return `“${display}” was mentioned ${stats.total.toLocaleString()} times on Hacker News${span}${peak}.`;
+}
+
 /** Just the histogram + derived stats for a term (no story fetch). Used by the
  *  OG image routes, which only draw the line. */
 export async function getTermSeries(
@@ -141,6 +161,9 @@ export type ComparisonSeries = {
   term: string;
   buckets: MonthCount[];
   stats: TermStats;
+  /** A few top headlines for this term — real, per-term content so a comparison
+   *  page isn't just an overlaid chart (which read as thin/templated). */
+  stories: HnDoc[];
 };
 
 export type ComparisonLanding = {
@@ -150,11 +173,15 @@ export type ComparisonLanding = {
 
 export async function getComparisonLanding(
   terms: string[],
+  storiesPerTerm = 4,
 ): Promise<ComparisonLanding> {
   const series = await Promise.all(
     terms.map(async (term) => {
-      const buckets = await bucketsFor(term);
-      return { term, buckets, stats: statsFor(buckets) };
+      const [buckets, stories] = await Promise.all([
+        bucketsFor(term),
+        topStories(term, storiesPerTerm),
+      ]);
+      return { term, buckets, stats: statsFor(buckets), stories };
     }),
   );
   return { terms, series };

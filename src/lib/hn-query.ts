@@ -356,14 +356,14 @@ export function searchSnippet(opts: SearchArgsOpts): string {
   if (sort === "relevance" && q.trim()) {
     body = body.replace(
       /(\n\s*)scoreFunc:/,
-      `$1// finalScore = relevance + ${POINTS_FACTOR}*log1p(score) + ${COMMENTS_FACTOR}*log1p(ndesc)$1scoreFunc:`,
+      `$1// finalScore = relevance + ${POINTS_FACTOR}*log1p(points) + ${COMMENTS_FACTOR}*log1p(comments)$1scoreFunc:`,
     );
   }
   return (
     `const hn = redis.search.index({ name: "hn", schema });\n\n` +
     note +
     `const { documents } = await hn.query(${body});\n\n` +
-    `// fully type-safe\n` +
+    `// type-safe\n` +
     `documents[0].title;`
   );
 }

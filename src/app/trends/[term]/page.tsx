@@ -12,17 +12,23 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import {
-  SITE_NAME,
   abs,
   allTrendTerms,
   termToSlug,
+  comparisonSlug,
   slugToTerm,
   isKnownTermSlug,
+  isIndexedTermSlug,
+  groupOfTerm,
+  siblingTerms,
+  comparisonsForTerm,
+  sampleOtherTerms,
   HISTORY_FROM_YEAR,
   HISTORY_TO_YEAR,
   HISTORY_SPAN_YEARS,
 } from "@/lib/site";
-import { getTermLanding } from "@/lib/landing-data";
+import { getTermLanding, trendSummary } from "@/lib/landing-data";
+import { analysisForSlug } from "@/lib/trend-analysis";
 import { StaticTrend } from "@/app/components/StaticTrend";
 import { JsonLd } from "@/app/components/JsonLd";
 import { LandingHeader, LandingFooter } from "@/app/components/LandingChrome";
@@ -55,7 +61,7 @@ export async function generateMetadata({
     title,
     description,
     alternates: { canonical: path },
-    robots: isKnownTermSlug(slug) ? undefined : { index: false, follow: true },
+    robots: isIndexedTermSlug(slug) ? undefined : { index: false, follow: true },
     openGraph: {
       title: `${display} — Hacker News trend`,
       description,
@@ -80,8 +86,20 @@ export default async function TrendPage({
   if (stats.total === 0 && !isKnownTermSlug(slug)) notFound();
 
   const display = titleCase(term);
-  const path = `/trends/${termToSlug(term)}`;
+  const slugForTerm = termToSlug(term);
+  const path = `/trends/${slugForTerm}`;
   const compareHref = `/?q=${encodeURIComponent(term)}`;
+
+  // Lead-with-the-answer summary + (for top terms) model-authored analysis.
+  const summary = trendSummary(term, stats);
+  const analysis = analysisForSlug(slugForTerm);
+
+  // Cross-links that wire this page into the rest of the catalog: comparisons
+  // it appears in, its same-category siblings, and a sample reaching elsewhere.
+  const group = groupOfTerm(term);
+  const relatedComparisons = comparisonsForTerm(term);
+  const siblings = siblingTerms(term, 6);
+  const others = sampleOtherTerms(term, 4);
 
   const jsonLd = {
     "@context": "https://schema.org",
@@ -118,7 +136,12 @@ export default async function TrendPage({
         <h1 className="text-[20px] font-bold leading-tight">
           How “{term}” trended on Hacker News
         </h1>
-        <p className="text-[12px] text-[color:var(--hn-subtle)] mt-1 max-w-[760px] leading-relaxed">
+        {/* Lead with the answer: the headline numbers in one plain sentence, the
+            line a featured snippet or an AI answer can lift verbatim. */}
+        <p className="text-[14px] mt-2 max-w-[760px] leading-relaxed font-medium">
+          {summary}
+        </p>
+        <p className="text-[12px] text-[color:var(--hn-subtle)] mt-2 max-w-[760px] leading-relaxed">
           Every month from {HISTORY_FROM_YEAR} to {HISTORY_TO_YEAR}, counting how
           often “{term}” appears in Hacker News stories and comments. Each point
           is a live date-histogram over ~45M items, computed with{" "}
@@ -164,6 +187,21 @@ export default async function TrendPage({
         </div>
       </div>
 
+      {/* analysis — model-authored prose for the top terms; the unique,
+          non-templated content that makes this page worth indexing on its own */}
+      {analysis && analysis.paragraphs.length > 0 && (
+        <div className="px-3 pt-6">
+          <h2 className="text-[14px] font-bold">What the chart shows</h2>
+          <div className="mt-1 max-w-[760px] space-y-2">
+            {analysis.paragraphs.map((p, i) => (
+              <p key={i} className="text-[13px] leading-relaxed">
+                {p}
+              </p>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* top stories */}
       {stories.length > 0 && (
         <div className="px-3 pt-6">
@@ -202,10 +240,68 @@ export default async function TrendPage({
         </div>
       )}
 
-      {/* related */}
+      {/* related — wire this page into the catalog's link graph: comparisons it
+          appears in, same-category siblings, and a few picks from elsewhere.
+          Dense internal linking is what gets these long-tail pages crawled and
+          ranked, so every link is a real <a href> to a clean landing URL. */}
       <div className="px-3 pt-6">
         <h2 className="text-[14px] font-bold">More to explore</h2>
-        <p className="text-[12px] mt-1">
+
+        {relatedComparisons.length > 0 && (
+          <div className="mt-2">
+            <div className="text-[11px] uppercase tracking-wide text-[color:var(--hn-subtle)]">
+              “{term}” head-to-head
+            </div>
+            <ul className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-[13px]">
+              {relatedComparisons.map((c) => (
+                <li key={comparisonSlug(c.terms)}>
+                  <Link
+                    href={`/compare/${comparisonSlug(c.terms)}`}
+                    className="text-[color:var(--hn-orange)]"
+                  >
+                    {c.terms.join(" vs ")} →
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {siblings.length > 0 && (
+          <div className="mt-3">
+            <div className="text-[11px] uppercase tracking-wide text-[color:var(--hn-subtle)]">
+              {group ? `More from ${group.title}` : "Related terms"}
+            </div>
+            <ul className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-[13px]">
+              {siblings.map((t) => (
+                <li key={t}>
+                  <Link href={`/trends/${termToSlug(t)}`} className="text-[color:var(--hn-orange)]">
+                    {t}
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {others.length > 0 && (
+          <div className="mt-3">
+            <div className="text-[11px] uppercase tracking-wide text-[color:var(--hn-subtle)]">
+              Elsewhere on Hacker Trends
+            </div>
+            <ul className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-[13px]">
+              {others.map((t) => (
+                <li key={t}>
+                  <Link href={`/trends/${termToSlug(t)}`} className="text-[color:var(--hn-orange)]">
+                    {t}
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        <p className="text-[12px] mt-4">
           <Link href="/" className="text-[color:var(--hn-orange)]">
             Compare “{term}” with anything else
           </Link>{" "}

@@ -16,6 +16,8 @@ import {
   comparisonBySlug,
   allComparisonSlugs,
   slugToTerm,
+  sampleOtherComparisons,
+  isIndexedComparisonSlug,
   HISTORY_FROM_YEAR,
   HISTORY_TO_YEAR,
 } from "@/lib/site";
@@ -56,7 +58,6 @@ export async function generateMetadata({
   const { slug } = await params;
   const terms = termsForSlug(slug);
   if (terms.length < 2) return {};
-  const known = !!comparisonBySlug(slug);
   const label = joinTerms(terms);
   const title = `${label} on Hacker News — popularity over time, compared`;
   const description = `${label}: how each trended across ${HISTORY_FROM_YEAR}–${HISTORY_TO_YEAR} of Hacker News mentions, overlaid on one chart. See when the lead changed hands. Powered by Upstash Redis Search.`;
@@ -65,7 +66,7 @@ export async function generateMetadata({
     title,
     description,
     alternates: { canonical: path },
-    robots: known ? undefined : { index: false, follow: true },
+    robots: isIndexedComparisonSlug(slug) ? undefined : { index: false, follow: true },
     openGraph: { title: `${label} — Hacker News trends`, description, url: path, type: "article" },
     twitter: { title: `${label} — Hacker News trends`, description },
   };
@@ -93,6 +94,23 @@ export default async function ComparePage({
   const label = joinTerms(terms);
   const path = `/compare/${comparisonSlug(terms)}`;
   const compareHref = `/?${terms.map((t) => `q=${encodeURIComponent(t)}`).join("&")}`;
+
+  // Lead-with-the-answer: who's mentioned more, by how much.
+  const ranked = [...colored].sort((a, b) => b.stats.total - a.stats.total);
+  const lead = ranked[0];
+  const runnerUp = ranked[1];
+  const summary =
+    lead.stats.total > 0
+      ? `Across ${HISTORY_FROM_YEAR}–${HISTORY_TO_YEAR} of Hacker News, ${
+          lead.term
+        } leads ${label} with ${lead.stats.total.toLocaleString()} mentions${
+          runnerUp
+            ? ` to ${runnerUp.term}’s ${runnerUp.stats.total.toLocaleString()}`
+            : ""
+        }${lead.stats.peakLabel ? `, peaking in ${lead.stats.peakLabel}` : ""}.`
+      : "";
+
+  const relatedComparisons = sampleOtherComparisons(comparisonSlug(terms), 5);
 
   const jsonLd = {
     "@context": "https://schema.org",
@@ -126,7 +144,12 @@ export default async function ComparePage({
           ))}
           <span className="font-normal"> on Hacker News</span>
         </h1>
-        <p className="text-[12px] text-[color:var(--hn-subtle)] mt-1 max-w-[760px] leading-relaxed">
+        {summary && (
+          <p className="text-[14px] mt-2 max-w-[760px] leading-relaxed font-medium">
+            {summary}
+          </p>
+        )}
+        <p className="text-[12px] text-[color:var(--hn-subtle)] mt-2 max-w-[760px] leading-relaxed">
           Mention-over-time for {label}, overlaid across {HISTORY_FROM_YEAR}–
           {HISTORY_TO_YEAR} of Hacker News. Each line is a live date-histogram
           over ~45M posts and comments, computed with{" "}
@@ -185,6 +208,51 @@ export default async function ComparePage({
         </div>
       )}
 
+      {/* top stories per term — real headlines behind each line, the unique
+          content that lifts these pages above thin "two-lines-overlaid" templates */}
+      {colored.some((s) => s.stories.length > 0) && (
+        <div className="px-3 pt-6">
+          <h2 className="text-[14px] font-bold">The stories behind each line</h2>
+          <div className="mt-2 grid gap-x-8 gap-y-4 sm:grid-cols-2">
+            {colored.map((s) =>
+              s.stories.length === 0 ? null : (
+                <div key={s.term}>
+                  <div
+                    className="text-[12px] font-semibold mb-1"
+                    style={{ color: s.color }}
+                  >
+                    Top “{s.term}” stories
+                  </div>
+                  <ol className="space-y-1.5">
+                    {s.stories.map((st) => {
+                      const hnUrl = `https://news.ycombinator.com/item?id=${st.id}`;
+                      const year = st.time
+                        ? new Date(st.time).getUTCFullYear()
+                        : "";
+                      return (
+                        <li key={st.id} className="text-[13px] leading-snug">
+                          <a
+                            href={st.url || hnUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="font-medium"
+                          >
+                            {st.title}
+                          </a>{" "}
+                          <span className="text-[color:var(--hn-subtle)] text-[11px]">
+                            {st.score.toLocaleString()} points · {year}
+                          </span>
+                        </li>
+                      );
+                    })}
+                  </ol>
+                </div>
+              ),
+            )}
+          </div>
+        </div>
+      )}
+
       {/* per-term deep links */}
       <div className="px-3 pt-6">
         <h2 className="text-[14px] font-bold">Each term on its own</h2>
@@ -202,6 +270,26 @@ export default async function ComparePage({
           ))}
         </ul>
       </div>
+
+      {/* cross-links to other curated comparisons — wire this page into the
+          link graph so crawlers reach the rest of the /compare set. */}
+      {relatedComparisons.length > 0 && (
+        <div className="px-3 pt-6">
+          <h2 className="text-[14px] font-bold">More comparisons</h2>
+          <ul className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[13px]">
+            {relatedComparisons.map((c) => (
+              <li key={comparisonSlug(c.terms)}>
+                <Link
+                  href={`/compare/${comparisonSlug(c.terms)}`}
+                  className="text-[color:var(--hn-orange)]"
+                >
+                  {c.terms.join(" vs ")} →
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       <div className="px-3 pt-6">
         <p className="text-[12px]">
