@@ -347,6 +347,27 @@ input.hn-input:focus { border-color: var(--hn-orange); }
 }
 .lot-more:hover { text-decoration: underline; }
 
+/* --- /archived/<id>: injected HN markup -------------------------------- */
+/* `text` from the Algolia archive is HN's own sanitized HTML. Tailwind preflight
+   resets these elements, so restyle paragraphs / links / code to match the app. */
+.hn-html p { margin: 0 0 8px; }
+.hn-html p:last-child { margin-bottom: 0; }
+.hn-html a, .hn-html a:visited { color: var(--hn-orange); text-decoration: underline; word-break: break-word; }
+.hn-html a:hover { text-decoration: none; }
+.hn-html i, .hn-html em { font-style: italic; }
+.hn-html code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 9pt;
+}
+.hn-html pre {
+  background: #f6f6ef;
+  border: 1px solid #e4e4e4;
+  padding: 6px 8px;
+  overflow-x: auto;
+  margin: 0 0 8px;
+}
+.hn-html pre code { font-size: 8.5pt; }
+
 /* --- "Show the code" panel --------------------------------------------- */
 .code-panel { border: 1px solid var(--hn-subtle); background: #fff; }
 

@@ -378,11 +378,15 @@ export function HackerTrends({
     selectRange({ fromMs, toMs });
   };
 
-  // The gallery's comparisons, ranked by the internal "coolness" metric.
-  const comparisons = useMemo(
-    () => sortByCoolness(COMPARISONS, examplesData.terms),
-    [examplesData],
-  );
+  // The gallery's comparisons, ranked by the internal "coolness" metric, with
+  // the vercel-vs-cloudflare matchup pinned to the front regardless of score.
+  const comparisons = useMemo(() => {
+    const ranked = sortByCoolness(COMPARISONS, examplesData.terms);
+    const pinnedKey = "vercel|cloudflare";
+    const pinned = ranked.filter((c) => c.terms.join("|") === pinnedKey);
+    const rest = ranked.filter((c) => c.terms.join("|") !== pinnedKey);
+    return [...pinned, ...rest];
+  }, [examplesData]);
   const bucketsFor = (term: string) => examplesData.terms[term] ?? [];
 
   const visibleDocs = expanded ? docs : docs.slice(0, PREVIEW_ROWS);
@@ -627,12 +631,12 @@ export function HackerTrends({
         )}
       </div>
 
-      {/* Example queries: the trend gallery, now an in-page picker ---- */}
+      {/* Popular Comparisons: the trend gallery, now an in-page picker ---- */}
       <section className="gallery-section px-3 pt-4">
         <div className="flex items-baseline gap-2 border-b border-[color:var(--hn-subtle)] pb-1 mb-3">
-          <h2 className="text-[13px] font-bold">example queries</h2>
+          <h2 className="text-[13px] font-bold">Popular Comparisons</h2>
           <span className="text-[10px] text-[color:var(--hn-subtle)]">
-            click any chart to load it above
+            click to load above
           </span>
         </div>
         <div className="mini-grid mini-grid--wide">

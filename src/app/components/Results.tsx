@@ -209,6 +209,16 @@ function StoryRow({
             rel="noreferrer noopener"
           >
             {d.ndesc.toLocaleString()} comments
+          </a>{" "}
+          |{" "}
+          <a
+            className="subtle"
+            href={`/archived/${d.id}`}
+            target="_blank"
+            rel="noreferrer noopener"
+            title="Won't open on HN? A story can be flagged, killed, or deleted there after we indexed it — HN then hides it, but it's still mirrored in the HN Search (Algolia) archive."
+          >
+            archived ›
           </a>
         </div>
       </td>
@@ -278,7 +288,7 @@ function CommentRow({
             ·{" "}
             <a
               className="subtle"
-              href={`https://hn.algolia.com/api/v1/items/${d.id}`}
+              href={`/archived/${d.id}`}
               target="_blank"
               rel="noreferrer noopener"
               title="Won't open on HN? A comment can be flagged, killed, or deleted there after we indexed it — HN then hides it, but it's still mirrored in the HN Search (Algolia) archive."

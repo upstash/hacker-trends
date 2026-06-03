@@ -259,13 +259,17 @@ export function buildAggregateArgs(opts: AggregateArgsOpts): (string | number)[]
  */
 
 /** A value is "inlineable", kept on one line, if it's a primitive, a flat
- *  array of primitives, or a small object (≤2 keys) of primitives. This is what
+ *  array of primitives, or a small object of inlineable values. This is what
  *  lets `{ $eq: "bitcoin", $boost: 5 }` stay horizontal instead of exploding
  *  into a tall column. Mirrors the data browser's `toJsLiteral` formatter. */
-// 3 so a scoreFunc field — `{ field: "score", modifier: "log1p", factor: 50 }` —
-// stays on one line like the docs show, alongside the 2-key `{ $eq, $boost }`
-// clauses. No other object in any emitted snippet has 3 primitive keys.
-const MAX_INLINE_KEYS = 3;
+// A wrapper object may hold up to 2 keys; but a *flat* object — every value a
+// scalar — may hold up to 3, so a scoreFunc field
+// `{ field: "score", modifier: "log1p", factor: 50 }` stays on one line like the
+// docs show. The extra key is allowed ONLY when flat, so the 3-key `aggregations`
+// block (whose values are nested objects) still expands one key per line instead
+// of collapsing onto one runaway line.
+const MAX_INLINE_KEYS = 2;
+const MAX_INLINE_FLAT_KEYS = 3;
 function isInlineable(v: unknown): boolean {
   if (typeof v !== "object" || v === null) return true;
   // Arrays of objects always get their own block; flat arrays can inline.
@@ -273,7 +277,9 @@ function isInlineable(v: unknown): boolean {
   // Recurse on object values so a single-key wrapper around a small object,
   // `{ title: { $eq: "x", $boost: 5 } }`, stays on one line.
   const entries = Object.entries(v as Record<string, unknown>);
-  return entries.length <= MAX_INLINE_KEYS && entries.every(([, x]) => isInlineable(x));
+  if (!entries.every(([, x]) => isInlineable(x))) return false;
+  const flat = entries.every(([, x]) => typeof x !== "object" || x === null);
+  return entries.length <= (flat ? MAX_INLINE_FLAT_KEYS : MAX_INLINE_KEYS);
 }
 
 /** Pretty-print a value as a JS object literal (unquoted identifier keys),
@@ -301,11 +307,8 @@ function fmtJs(v: unknown, indent = 0): string {
   const entries = Object.entries(v as Record<string, unknown>);
   if (entries.length === 0) return "{}";
   // Never inline the root object; the top-level call reads best expanded.
-  if (
-    indent > 0 &&
-    entries.length <= MAX_INLINE_KEYS &&
-    entries.every(([, x]) => isInlineable(x))
-  ) {
+  // Below the root, the same predicate the array branch uses decides it.
+  if (indent > 0 && isInlineable(v)) {
     const oneLine = `{ ${entries.map(([k, x]) => `${fmtKey(k)}: ${fmtJs(x, indent + 1)}`).join(", ")} }`;
     if (!oneLine.includes("\n")) return oneLine;
   }

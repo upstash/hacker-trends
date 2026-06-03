@@ -252,6 +252,11 @@ export type Comparison = {
 // more than they spike). Kept on purpose because the matchup itself is the point.
 export const COMPARISONS: Comparison[] = [
   {
+    terms: ["vercel", "cloudflare"],
+    story:
+      "The deploy-platform rivalry: Cloudflare carries the CDN/edge conversation for years, then Vercel surges on the Next.js wave and the two trade blows as both push into edge functions and full-stack hosting.",
+  },
+  {
     terms: ["openai", "anthropic"],
     story:
       "David vs Goliath of the lab era: OpenAI's repeated towers lead from 2023, until a sudden 2026 Anthropic surge pulls level and the lead changes hands.",
