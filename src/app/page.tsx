@@ -1,13 +1,13 @@
 /**
  * Root route: the whole app on one page.
  *
- * This server shell does two things and hands off to the client:
- *   1. parses the incoming `?…` into seed state (so a shared link renders the
- *      right view with no hydration flash), and
- *   2. fetches the trend gallery's data once from a single cached Redis key
- *      (see examples-data.ts) and passes it down, so the "example queries"
- *      gallery at the bottom of the page costs one cache read, not ~190 live
- *      queries.
+ * This server shell just parses the incoming `?…` into seed state (so a shared
+ * link renders the right view with no hydration flash) and hands off to the
+ * client. It deliberately does NOT fetch the gallery histograms: that used to
+ * be an `await getExamplesData()` here, which blocked first paint on a multi-MB
+ * Redis read and was the page's LCP bottleneck (~2.6s). The gallery's text and
+ * links come from the static catalog (so SEO is unaffected), and the client
+ * fetches the histogram data from the CDN-cached `/examples.json` AFTER paint.
  *
  * Everything interactive — the compare/search tool AND the embedded gallery —
  * lives in <HackerTrends/>, so clicking an example swaps the query in place
@@ -16,8 +16,6 @@
 
 import type { Metadata } from "next";
 import { parseShareState } from "@/lib/share-url";
-import { getExamplesData } from "@/lib/examples-data";
-import { encodeExamplesWire } from "@/lib/examples-wire";
 import { SITE_NAME, SITE_TAGLINE, SITE_DESCRIPTION } from "@/lib/site";
 import { HackerTrends } from "./HackerTrends";
 
@@ -54,12 +52,5 @@ export default async function Home({
     else if (v !== undefined) sp.append(k, v);
   }
 
-  // Ship the gallery histograms to the client in a compact slot-indexed form
-  // (see examples-wire.ts) — the verbose {key, docCount} objects pushed the
-  // RSC payload past 8 MB; the wire form is ~10× smaller.
-  const examplesData = encodeExamplesWire(await getExamplesData());
-
-  return (
-    <HackerTrends initial={parseShareState(sp)} examplesData={examplesData} />
-  );
+  return <HackerTrends initial={parseShareState(sp)} />;
 }

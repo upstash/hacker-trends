@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { memo, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { MIN_MS, MAX_MS, MONTH_MS, SLOTS, slotOf } from "@/lib/trend-time";
 
@@ -57,15 +57,21 @@ function viewHref(terms: string[]): string {
  *   - click title or chart → /search comparing these term(s), full history
  *   - hover a month        → inline month + per-term counts (no navigation)
  */
-export function MiniTrend({ series, story, onPick }: Props) {
+// React.memo so the ~190 gallery sparklines don't all re-render (and re-run the
+// densify/path math below) every time the parent's state changes — e.g. clicking
+// one comparison. The parent precomputes stable `series`/`onPick` props
+// (HackerTrends), so the default shallow prop compare lets every untouched card
+// bail out, which is what keeps the interaction (INP) cheap.
+export const MiniTrend = memo(function MiniTrend({ series, story, onPick }: Props) {
   const router = useRouter();
   const terms = series.map((s) => s.term);
   // Click loads the terms in place when the host passed `onPick` (the merged
-  // root page), else falls back to navigating to `/?q=…`.
+  // root page), else falls back to navigating to `/?q=…`. When `onPick` is set
+  // the live search runs regardless, so we don't gate it on the sparkline
+  // having data yet (the histograms load asynchronously after first paint).
   const activate = () => {
-    if (!hasData) return;
     if (onPick) onPick(terms);
-    else router.push(viewHref(terms));
+    else if (hasData) router.push(viewHref(terms));
   };
   const svgRef = useRef<SVGSVGElement | null>(null);
   const [hoverSlot, setHoverSlot] = useState<number | null>(null);
@@ -150,7 +156,7 @@ export function MiniTrend({ series, story, onPick }: Props) {
         viewBox={`0 0 ${VIEW_W} ${VIEW_H}`}
         preserveAspectRatio="none"
         className="mini-trend-svg"
-        style={{ cursor: hasData ? "pointer" : "default" }}
+        style={{ cursor: hasData || onPick ? "pointer" : "default" }}
         onMouseMove={(e) => setHoverSlot(slotAtX(clientToView(e.clientX)))}
         onMouseLeave={() => setHoverSlot(null)}
         onClick={activate}
@@ -163,20 +169,29 @@ export function MiniTrend({ series, story, onPick }: Props) {
           );
         })}
 
-        {paths.map((p, i) => (
-          <path key={`a${i}`} d={p.area} fill={p.color} opacity={0.12} />
-        ))}
-        {paths.map((p, i) => (
-          <path
-            key={`l${i}`}
-            d={p.line}
-            fill="none"
-            stroke={p.color}
-            strokeWidth={1.4}
-            strokeLinejoin="round"
-            vectorEffect="non-scaling-stroke"
-          />
-        ))}
+        {/* Only emit the line/area geometry once there's data. Each path is a
+            ~240-point string; rendering all ~300 gallery charts' paths on the
+            server (where the histograms aren't loaded yet — they arrive via the
+            client `/examples.json` fetch) ballooned the homepage HTML to ~2 MB
+            of flat-line strings for nothing. Gated on hasData, the server ships
+            just the empty chart frames + the (SEO-relevant) titles/links/stories,
+            and the lines fill in client-side after the data lands. */}
+        {hasData &&
+          paths.map((p, i) => (
+            <path key={`a${i}`} d={p.area} fill={p.color} opacity={0.12} />
+          ))}
+        {hasData &&
+          paths.map((p, i) => (
+            <path
+              key={`l${i}`}
+              d={p.line}
+              fill="none"
+              stroke={p.color}
+              strokeWidth={1.4}
+              strokeLinejoin="round"
+              vectorEffect="non-scaling-stroke"
+            />
+          ))}
 
         {/* hover column + crosshair */}
         {hoverSlot != null && hasData && (
@@ -214,4 +229,4 @@ export function MiniTrend({ series, story, onPick }: Props) {
       {story && <p className="mini-trend-story">{story}</p>}
     </div>
   );
-}
+});

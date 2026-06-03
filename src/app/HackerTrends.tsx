@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   aggregate,
   searchPosts,
@@ -108,13 +108,26 @@ function sumAuthors(
     .slice(0, 6);
 }
 
-export function HackerTrends({
-  initial,
-  examplesData,
-}: {
-  initial: ShareState;
-  examplesData: ExamplesWire;
-}) {
+export function HackerTrends({ initial }: { initial: ShareState }) {
+  // The gallery histograms are fetched AFTER first paint from the CDN-cached
+  // `/examples.json` (see that route + page.tsx) rather than blocking the server
+  // render. Until they arrive the gallery still renders its full structure —
+  // titles, links, stories from the static catalog — with flat sparklines; only
+  // the line shapes fill in once this resolves.
+  const [examplesData, setExamplesData] = useState<ExamplesWire | null>(null);
+  useEffect(() => {
+    const ctrl = new AbortController();
+    fetch("/examples.json", { signal: ctrl.signal })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: ExamplesWire | null) => {
+        if (d?.terms) setExamplesData(d);
+      })
+      .catch(() => {
+        /* gallery sparklines just stay flat if this fails; not load-bearing */
+      });
+    return () => ctrl.abort();
+  }, []);
+
   // All the knobs below are seeded from the URL (parsed server-side and handed
   // in as `initial`), then mirrored back into the URL by the sync effect so the
   // address bar always reproduces the current view.
@@ -352,7 +365,10 @@ export function HackerTrends({
 
   // Load a gallery example's term(s) in place and jump back to the top, clearing
   // any active filters/range so the fresh comparison shows from scratch.
-  const pickTerms = (terms: string[]) => {
+  // useCallback (only setters + refs inside, all stable) keeps this identity
+  // fixed across renders so the React.memo'd sparklines that receive it as
+  // `onPick` don't all re-render when an unrelated bit of state changes.
+  const pickTerms = useCallback((terms: string[]) => {
     setQueries(terms.slice(0, MAX_QUERIES).map((text, i) => ({ id: `q${i}`, text })));
     setTermFilter(null);
     setByAuthor(null);
@@ -371,7 +387,7 @@ export function HackerTrends({
     setAggsLoading(true);
     lastTermsKey.current = "";
     window.scrollTo({ top: 0, behavior: "smooth" });
-  };
+  }, []);
 
   // "newest first" doesn't make sense once you've scoped to a window, so its tab
   // is disabled while a range is set. If it happened to be the active sort when
@@ -406,17 +422,50 @@ export function HackerTrends({
   // the vercel-vs-cloudflare matchup pinned to the front regardless of score.
   // Rebuild the {key, docCount}[] histograms from the compact wire form once.
   const termBuckets = useMemo(
-    () => decodeExamplesWire(examplesData),
+    () => (examplesData ? decodeExamplesWire(examplesData) : {}),
     [examplesData],
   );
   const comparisons = useMemo(() => {
+    // Before the histograms load, every coolness score is 0 so this is a no-op
+    // (stable sort keeps the curated order); it re-ranks once data arrives.
     const ranked = sortByCoolness(COMPARISONS, termBuckets);
     const pinnedKey = "vercel|cloudflare";
     const pinned = ranked.filter((c) => c.terms.join("|") === pinnedKey);
     const rest = ranked.filter((c) => c.terms.join("|") !== pinnedKey);
     return [...pinned, ...rest];
   }, [termBuckets]);
-  const bucketsFor = (term: string) => termBuckets[term] ?? [];
+
+  // Precompute the gallery's per-card MiniSeries ONCE per data change. The
+  // sparklines are React.memo'd, so as long as their `series` prop keeps a
+  // stable identity between renders they skip re-rendering (and re-densifying)
+  // entirely — that's what takes the comparison-click interaction from ~400ms
+  // (re-pathing all ~190 charts) down to a cheap parent re-render.
+  const comparisonItems = useMemo(
+    () =>
+      comparisons.map((c) => ({
+        key: c.terms.join("|"),
+        story: c.story,
+        series: c.terms.map((term, i) => ({
+          term,
+          color: COMPARE_COLORS[i % COMPARE_COLORS.length],
+          buckets: termBuckets[term] ?? [],
+        })),
+      })),
+    [comparisons, termBuckets],
+  );
+  const groupItems = useMemo(
+    () =>
+      EXAMPLE_GROUPS.map((g) => ({
+        id: g.id,
+        title: g.title,
+        blurb: g.blurb,
+        items: g.terms.map((term) => ({
+          term,
+          series: [{ term, color: SINGLE_COLOR, buckets: termBuckets[term] ?? [] }],
+        })),
+      })),
+    [termBuckets],
+  );
 
   const visibleDocs = expanded ? docs : docs.slice(0, PREVIEW_ROWS);
   const hiddenCount = docs.length - PREVIEW_ROWS;
@@ -584,9 +633,12 @@ export function HackerTrends({
       </div>
 
       {/* filters: narrow the merged list — by term, by author. (comments-only
-          lives in the sort-tab strip above now.) */}
-      {(series.length > 1 || authors.length > 0) && (
-        <div className="px-2 pt-1">
+          lives in the sort-tab strip above now.) The wrapper renders (with a
+          reserved min-height) as soon as there are terms, even before the
+          aggregates that populate it land, so the row doesn't pop in and shift
+          the results down mid-load. */}
+      {allTerms.length > 0 && (
+        <div className="px-2 pt-1" style={{ minHeight: 26 }}>
           <div className="filters-row">
             {series.length > 1 && (
               <>
@@ -642,7 +694,13 @@ export function HackerTrends({
       )}
 
       {/* Results ----------------------------------------------------- */}
-      <div className="bg-[color:var(--hn-bg)] px-2 pb-6">
+      {/* Reserve roughly a preview's worth of height so the list growing from
+          empty → "searching…" → ~8 rows doesn't shove the gallery below it
+          down on load (that growth was the bulk of the page's CLS). */}
+      <div
+        className="bg-[color:var(--hn-bg)] px-2 pb-6"
+        style={{ minHeight: allTerms.length > 0 ? 300 : 0 }}
+      >
         {error ? (
           <div className="text-red-600 text-sm py-3">{error}</div>
         ) : searching && docs.length === 0 ? (
@@ -675,14 +733,10 @@ export function HackerTrends({
           </span>
         </div>
         <div className="mini-grid mini-grid--wide">
-          {comparisons.map((c) => (
+          {comparisonItems.map((c) => (
             <MiniTrend
-              key={c.terms.join("|")}
-              series={c.terms.map((term, i) => ({
-                term,
-                color: COMPARE_COLORS[i % COMPARE_COLORS.length],
-                buckets: bucketsFor(term),
-              }))}
+              key={c.key}
+              series={c.series}
               story={c.story}
               onPick={pickTerms}
             />
@@ -690,23 +744,19 @@ export function HackerTrends({
         </div>
       </section>
 
-      {EXAMPLE_GROUPS.map((g, gi) => (
+      {groupItems.map((g, gi) => (
         <section
           key={g.id}
           id={g.id}
-          className={`gallery-section px-3 pt-10${gi === EXAMPLE_GROUPS.length - 1 ? " pb-12" : ""}`}
+          className={`gallery-section px-3 pt-10${gi === groupItems.length - 1 ? " pb-12" : ""}`}
         >
           <div className="flex items-baseline gap-2 border-b border-[color:var(--hn-subtle)] pb-1 mb-3">
             <h2 className="text-[13px] font-bold lowercase">{g.title}</h2>
             <span className="text-[10px] text-[color:var(--hn-subtle)]">{g.blurb}</span>
           </div>
           <div className="mini-grid">
-            {g.terms.map((term) => (
-              <MiniTrend
-                key={term}
-                series={[{ term, color: SINGLE_COLOR, buckets: bucketsFor(term) }]}
-                onPick={pickTerms}
-              />
+            {g.items.map((it) => (
+              <MiniTrend key={it.term} series={it.series} onPick={pickTerms} />
             ))}
           </div>
         </section>
