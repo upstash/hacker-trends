@@ -17,14 +17,23 @@
 import type { Metadata } from "next";
 import { parseShareState } from "@/lib/share-url";
 import { getExamplesData } from "@/lib/examples-data";
+import { SITE_NAME, SITE_TAGLINE, SITE_DESCRIPTION } from "@/lib/site";
 import { HackerTrends } from "./HackerTrends";
 
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
-  title: "Hacker Trends: 18 years of Hacker News, charted",
-  description:
-    "Overlay any topics, tools, or people and see how their traction rose and fell across 18 years of Hacker News: live date-histograms over 45M posts and comments. Powered by Upstash Redis Search.",
+  // Tab title is intentionally just the brand name (title.absolute bypasses the
+  // layout's "%s · Hacker Trends" template). The descriptive, keyword-rich
+  // phrasing search engines and social cards use lives in description/openGraph.
+  title: { absolute: SITE_NAME },
+  description: SITE_DESCRIPTION,
+  alternates: { canonical: "/" },
+  openGraph: {
+    title: `${SITE_NAME}: ${SITE_TAGLINE}`,
+    description: SITE_DESCRIPTION,
+    url: "/",
+  },
 };
 
 export default async function Home({

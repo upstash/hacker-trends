@@ -4,7 +4,7 @@
  * full query string so the shared view still reproduces exactly.
  */
 
-import { redirect } from "next/navigation";
+import { permanentRedirect } from "next/navigation";
 
 export const dynamic = "force-dynamic";
 
@@ -20,5 +20,7 @@ export default async function SearchRedirect({
     else if (v !== undefined) sp.append(k, v);
   }
   const qs = sp.toString();
-  redirect(qs ? `/?${qs}` : "/");
+  // 308 permanent: the search tool moved to "/" for good, so consolidate any
+  // ranking signal from old /search?q=… links onto the root.
+  permanentRedirect(qs ? `/?${qs}` : "/");
 }

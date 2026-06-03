@@ -431,7 +431,13 @@ export function HackerTrends({
             Upstash Redis Search
           </a>
           . Below the chart sit the actual stories and comments behind the
-          lines, filterable by term or author.
+          lines, filterable by term or author.{" "}
+          <Link
+            href="/how-it-works"
+            className="text-[color:var(--hn-orange)] whitespace-nowrap"
+          >
+            How it works ›
+          </Link>
         </p>
       </div>
 

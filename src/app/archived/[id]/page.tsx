@@ -11,9 +11,16 @@
  * is just a server shell so the [id] param resolves cleanly.
  */
 
+import type { Metadata } from "next";
 import { ArchivedItem } from "./ArchivedItem";
 
 export const dynamic = "force-dynamic";
+
+// Thin, third-party-mirrored content (Algolia's HN archive). Keep it usable for
+// people following an "archived ›" link, but out of the search index.
+export const metadata: Metadata = {
+  robots: { index: false, follow: false },
+};
 
 export default async function ArchivedPage({
   params,
