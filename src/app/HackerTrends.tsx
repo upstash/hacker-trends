@@ -10,7 +10,7 @@ import {
   type SortMode,
 } from "@/lib/hn-search";
 import { buildShareSearch, type ShareState } from "@/lib/share-url";
-import type { ExamplesData } from "@/lib/examples-data";
+import { decodeExamplesWire, type ExamplesWire } from "@/lib/examples-wire";
 import { EXAMPLE_GROUPS, COMPARISONS } from "@/lib/examples";
 import { sortByCoolness } from "@/lib/coolness";
 import { TrendChart, type Range, type Series } from "./components/TrendChart";
@@ -90,12 +90,30 @@ function mergeDocs(lists: MergedDoc[][], sort: SortMode): MergedDoc[] {
   return out;
 }
 
+/**
+ * Sum each author's matches across the compared terms' topAuthors lists, then
+ * take the top 6. Shared by the two paths that feed the author filter chips:
+ * the no-range path (which reuses the chart's already-fetched aggregates) and
+ * the range-scoped path (which fetches its own).
+ */
+function sumAuthors(
+  lists: { key: string; docCount: number }[][],
+): { key: string; docCount: number }[] {
+  const sum = new Map<string, number>();
+  for (const list of lists)
+    for (const au of list) sum.set(au.key, (sum.get(au.key) ?? 0) + au.docCount);
+  return [...sum.entries()]
+    .map(([key, docCount]) => ({ key, docCount }))
+    .sort((a, b) => b.docCount - a.docCount)
+    .slice(0, 6);
+}
+
 export function HackerTrends({
   initial,
   examplesData,
 }: {
   initial: ShareState;
-  examplesData: ExamplesData;
+  examplesData: ExamplesWire;
 }) {
   // All the knobs below are seeded from the URL (parsed server-side and handed
   // in as `initial`), then mirrored back into the URL by the sync effect so the
@@ -273,6 +291,22 @@ export function HackerTrends({
       setAuthors([]);
       return;
     }
+
+    // No date range → the full-history aggregates the chart already fetched
+    // (the `aggs` map) carry topAuthors for the exact same query. Reuse them
+    // instead of firing a second, byte-identical aggregate per term. (Previously
+    // this effect always refetched, doubling every aggregate request on load.)
+    if (!fromIso && !toIso) {
+      const wanted = new Set(terms.map((t) => t.toLowerCase()));
+      const lists = queries
+        .filter((q) => wanted.has(q.text.trim().toLowerCase()) && aggs[q.id])
+        .map((q) => aggs[q.id].topAuthors);
+      setAuthors(sumAuthors(lists));
+      return;
+    }
+
+    // A range is set: the full-history aggs don't match the scoped window, so we
+    // genuinely need a range-scoped aggregate per term.
     const ctrl = new AbortController();
     const t = setTimeout(() => {
       Promise.all(
@@ -282,17 +316,7 @@ export function HackerTrends({
       )
         .then((list) => {
           if (ctrl.signal.aborted) return;
-          // Sum each author's matches across the compared terms.
-          const sum = new Map<string, number>();
-          for (const a of list)
-            for (const au of a.topAuthors)
-              sum.set(au.key, (sum.get(au.key) ?? 0) + au.docCount);
-          setAuthors(
-            [...sum.entries()]
-              .map(([key, docCount]) => ({ key, docCount }))
-              .sort((a, b) => b.docCount - a.docCount)
-              .slice(0, 6),
-          );
+          setAuthors(sumAuthors(list.map((a) => a.topAuthors)));
         })
         .catch(() => {});
     }, 150);
@@ -300,7 +324,7 @@ export function HackerTrends({
       clearTimeout(t);
       ctrl.abort();
     };
-  }, [termsKey, fromIso, toIso]);
+  }, [termsKey, fromIso, toIso, aggs, queries]);
 
   /* ---- chart series ------------------------------------------------ */
   const series: Series[] = useMemo(
@@ -380,14 +404,19 @@ export function HackerTrends({
 
   // The gallery's comparisons, ranked by the internal "coolness" metric, with
   // the vercel-vs-cloudflare matchup pinned to the front regardless of score.
+  // Rebuild the {key, docCount}[] histograms from the compact wire form once.
+  const termBuckets = useMemo(
+    () => decodeExamplesWire(examplesData),
+    [examplesData],
+  );
   const comparisons = useMemo(() => {
-    const ranked = sortByCoolness(COMPARISONS, examplesData.terms);
+    const ranked = sortByCoolness(COMPARISONS, termBuckets);
     const pinnedKey = "vercel|cloudflare";
     const pinned = ranked.filter((c) => c.terms.join("|") === pinnedKey);
     const rest = ranked.filter((c) => c.terms.join("|") !== pinnedKey);
     return [...pinned, ...rest];
-  }, [examplesData]);
-  const bucketsFor = (term: string) => examplesData.terms[term] ?? [];
+  }, [termBuckets]);
+  const bucketsFor = (term: string) => termBuckets[term] ?? [];
 
   const visibleDocs = expanded ? docs : docs.slice(0, PREVIEW_ROWS);
   const hiddenCount = docs.length - PREVIEW_ROWS;

@@ -83,12 +83,15 @@ export function MiniTrend({ series, story, onPick }: Props) {
   const paths = useMemo(
     () =>
       dense.map(({ s, values }) => {
-        const pts = Array.from(values, (v, i) => `${slotCenterX(i)},${yOf(v)}`);
+        // Round coords to 1 decimal: at this 320-unit viewBox that's sub-pixel,
+        // but full 16-digit floats made each SSR'd path ~8.7 KB and ~190 gallery
+        // sparklines blew the homepage HTML past 5 MB.
+        const pts = Array.from(values, (v, i) => `${slotCenterX(i).toFixed(1)},${yOf(v).toFixed(1)}`);
         const base = VIEW_H - PAD_B;
         return {
           color: s.color,
           line: `M${pts.join("L")}`,
-          area: `M${slotCenterX(0)},${base}L${pts.join("L")}L${slotCenterX(SLOTS - 1)},${base}Z`,
+          area: `M${slotCenterX(0).toFixed(1)},${base}L${pts.join("L")}L${slotCenterX(SLOTS - 1).toFixed(1)},${base}Z`,
         };
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps

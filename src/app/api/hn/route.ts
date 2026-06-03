@@ -15,7 +15,20 @@
 import { argsFromParams, encodePath } from "@/lib/hn-query";
 
 export const runtime = "edge";
-export const dynamic = "force-dynamic"; // always a live query (no caching yet)
+// NOTE: intentionally NOT pinning preferredRegion. This is a global app, so the
+// edge function should run nearest each viewer (Vercel's default) to keep the
+// browser→edge hop short worldwide. The edge→Upstash hop does cost an extra RTT
+// for viewers far from the Frankfurt read region, but caching (below) makes that
+// a one-time-per-query cost rather than something every visitor pays.
+
+// How long the edge/CDN may serve a cached query response before refetching, and
+// how long it may serve a stale one while revalidating in the background. The HN
+// index is rebuilt by a periodic ingest (not live), and these are trend queries
+// over 18 years of data, so an hour of staleness is invisible — but it turns the
+// ~600ms Upstash query into a ~50ms CDN hit for every repeat of a given query
+// (and the popular gallery terms are shared across all visitors). This is the
+// single biggest latency win; the query itself dominates and caching skips it.
+const SEARCH_CACHE = "public, s-maxage=3600, stale-while-revalidate=86400";
 
 // Server-side read-only Upstash credentials. These live only on the server and
 // never reach the browser; the client talks exclusively to this edge route,
@@ -47,12 +60,15 @@ export async function GET(req: Request) {
       headers: { Authorization: `Bearer ${TOKEN}` },
       cache: "no-store",
     });
-    // Pass Upstash's body straight through ({ result } | { error }).
+    // Pass Upstash's body straight through ({ result } | { error }). A given
+    // (op,q,sort,range,…) URL is deterministic, so let the CDN cache the OK
+    // responses (see SEARCH_CACHE); never cache an error, or a transient Upstash
+    // blip would stick for the whole TTL.
     return new Response(await r.text(), {
       status: r.status,
       headers: {
         "content-type": "application/json",
-        "cache-control": "no-store, max-age=0",
+        "cache-control": r.ok ? SEARCH_CACHE : "no-store, max-age=0",
       },
     });
   } catch (e) {
@@ -80,17 +96,17 @@ async function resolveThread(startId: string | null): Promise<Response> {
     const [title, type, parent] = j.result ?? [];
     // A story (or any item carrying a real title) is the thread root.
     if (type === "story" || (title && title.length > 0)) {
-      return json({ result: { id: Number(id), title } }, 200);
+      return json({ result: { id: Number(id), title } }, 200, SEARCH_CACHE);
     }
     if (!parent || parent === "0") break;
     id = parent;
   }
-  return json({ result: { id: null, title: null } }, 200);
+  return json({ result: { id: null, title: null } }, 200, SEARCH_CACHE);
 }
 
-function json(body: unknown, status: number): Response {
+function json(body: unknown, status: number, cacheControl = "no-store"): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "content-type": "application/json", "cache-control": "no-store" },
+    headers: { "content-type": "application/json", "cache-control": cacheControl },
   });
 }

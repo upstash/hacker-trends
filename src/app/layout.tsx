@@ -96,6 +96,12 @@ export default function RootLayout({
 }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en">
+      <head>
+        {/* og:logo needs a `property` attribute, which Next's metadata API
+            can't emit (its `other` map always renders `name=`). Render it
+            directly — the App Router hoists it into <head>. */}
+        <meta property="og:logo" content={`${SITE_URL}/icon.svg`} />
+      </head>
       <body>
         <JsonLd data={siteJsonLd} />
         {children}
