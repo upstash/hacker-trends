@@ -32,6 +32,7 @@ import { analysisForSlug } from "@/lib/trend-analysis";
 import { StaticTrend } from "@/app/components/StaticTrend";
 import { JsonLd } from "@/app/components/JsonLd";
 import { LandingHeader, LandingFooter } from "@/app/components/LandingChrome";
+import { OutboundLink } from "@/app/components/OutboundLink";
 
 // ISR: built once, refreshed daily. Catalog terms are prebuilt; anything else
 // renders on demand and is then cached.
@@ -145,14 +146,14 @@ export default async function TrendPage({
           Every month from {HISTORY_FROM_YEAR} to {HISTORY_TO_YEAR}, counting how
           often “{term}” appears in Hacker News stories and comments. Each point
           is a live date-histogram over ~45M items, computed with{" "}
-          <a
+          <OutboundLink
+            destination="upstash"
+            location="trends_page"
             href="https://upstash.com/docs/redis/search"
-            target="_blank"
-            rel="noreferrer"
             className="text-[color:var(--hn-orange)]"
           >
             Upstash Redis Search
-          </a>
+          </OutboundLink>
           .
         </p>
       </div>

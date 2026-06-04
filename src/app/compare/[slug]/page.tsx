@@ -25,6 +25,7 @@ import { getComparisonLanding } from "@/lib/landing-data";
 import { StaticTrend } from "@/app/components/StaticTrend";
 import { JsonLd } from "@/app/components/JsonLd";
 import { LandingHeader, LandingFooter } from "@/app/components/LandingChrome";
+import { OutboundLink } from "@/app/components/OutboundLink";
 
 export const revalidate = 86400;
 export const dynamicParams = true;
@@ -153,14 +154,14 @@ export default async function ComparePage({
           Mention-over-time for {label}, overlaid across {HISTORY_FROM_YEAR}–
           {HISTORY_TO_YEAR} of Hacker News. Each line is a live date-histogram
           over ~45M posts and comments, computed with{" "}
-          <a
+          <OutboundLink
+            destination="upstash"
+            location="compare_page"
             href="https://upstash.com/docs/redis/search"
-            target="_blank"
-            rel="noreferrer"
             className="text-[color:var(--hn-orange)]"
           >
             Upstash Redis Search
-          </a>
+          </OutboundLink>
           .
         </p>
       </div>

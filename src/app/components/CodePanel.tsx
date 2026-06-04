@@ -22,6 +22,7 @@ import {
   type SortMode,
 } from "@/lib/hn-query";
 import { highlight, CodeLinks } from "./code-bits";
+import { track } from "@/lib/analytics";
 
 type Tab = "query" | "aggregate" | "setup";
 
@@ -56,7 +57,14 @@ export function CodePanel({ q, sort, from, to, by, type }: Props) {
       <div className="code-head">
         <button
           className="code-toggle"
-          onClick={() => setOpen((o) => !o)}
+          onClick={() =>
+            setOpen((o) => {
+              // Only the open direction is interesting — "did people look at the
+              // code?" — so log on expand, not on collapse.
+              if (!o) track("see_code_open", { tab });
+              return !o;
+            })
+          }
           aria-expanded={open}
         >
           <span className="code-caret">{open ? "▾" : "▸"}</span>
@@ -78,7 +86,10 @@ export function CodePanel({ q, sort, from, to, by, type }: Props) {
                   key={t.id}
                   className="code-tab"
                   data-active={tab === t.id}
-                  onClick={() => setTab(t.id)}
+                  onClick={() => {
+                    setTab(t.id);
+                    track("code_tab", { tab: t.id });
+                  }}
                 >
                   {t.label}
                 </button>

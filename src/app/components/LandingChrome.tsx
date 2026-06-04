@@ -6,6 +6,7 @@
  */
 
 import Link from "next/link";
+import { OutboundLink } from "./OutboundLink";
 
 export function LandingHeader({ crumb }: { crumb?: string }) {
   return (
@@ -33,13 +34,13 @@ export function LandingFooter() {
       <div className="flex flex-wrap gap-x-4 gap-y-1">
         <Link href="/">Search &amp; compare</Link>
         <Link href="/how-it-works">How it works</Link>
-        <a
+        <OutboundLink
+          destination="upstash"
+          location="landing_footer"
           href="https://upstash.com/docs/redis/search"
-          target="_blank"
-          rel="noreferrer"
         >
           Upstash Redis Search
-        </a>
+        </OutboundLink>
         <a href="https://news.ycombinator.com" target="_blank" rel="noreferrer">
           Hacker News
         </a>

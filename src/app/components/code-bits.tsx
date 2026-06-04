@@ -6,6 +6,7 @@
  */
 
 import type React from "react";
+import { trackOutbound } from "@/lib/analytics";
 
 /* ---- tiny, controlled-input syntax highlighter ---------------------- */
 /*
@@ -112,6 +113,7 @@ export function CodeLinks({
         href="https://github.com/upstash/hacker-trends"
         target="_blank"
         rel="noreferrer"
+        onClick={() => trackOutbound("github", "code_panel")}
       >
         github
       </a>
@@ -120,6 +122,7 @@ export function CodeLinks({
         href="https://upstash.com/docs/redis/search"
         target="_blank"
         rel="noreferrer"
+        onClick={() => trackOutbound("upstash", "code_panel")}
       >
         <span>Powered by</span>
         <UpstashMark />

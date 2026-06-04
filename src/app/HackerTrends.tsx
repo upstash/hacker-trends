@@ -13,6 +13,7 @@ import { buildShareSearch, type ShareState } from "@/lib/share-url";
 import { decodeExamplesWire, type ExamplesWire } from "@/lib/examples-wire";
 import { EXAMPLE_GROUPS, COMPARISONS } from "@/lib/examples";
 import { sortByCoolness } from "@/lib/coolness";
+import { track, trackOutbound } from "@/lib/analytics";
 import { TrendChart, type Range, type Series } from "./components/TrendChart";
 import { Results } from "./components/Results";
 import { CodePanel } from "./components/CodePanel";
@@ -160,6 +161,10 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
   // The term-set the current `docs` belong to; lets the results effect tell a
   // genuinely new comparison (blank + reload) from a same-terms refetch.
   const lastTermsKey = useRef("");
+  // The first results run is the URL-seeded load (default terms or a shared
+  // link), not a user-initiated search — skip logging it so the GA `search`
+  // event counts what people actually look up, not every page open.
+  const firstSearch = useRef(true);
   const [searching, setSearching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Whether the result list is expanded past the first PREVIEW_ROWS.
@@ -261,6 +266,22 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
       setDocs([]);
       setExpanded(false);
       lastTermsKey.current = termsKey;
+      // Log the search (and, when several terms, the comparison) — but not the
+      // initial URL-seeded load. `allTerms` is the full term-set the user sees;
+      // `terms` may be a single-term subset when the "only show <term>" filter
+      // is on, which isn't what we want to report as the search.
+      if (firstSearch.current) {
+        firstSearch.current = false;
+      } else if (allTerms.length > 0) {
+        const label = allTerms.join(" vs ");
+        track("search", {
+          terms: label,
+          term_count: allTerms.length,
+          sort,
+        });
+        if (allTerms.length > 1)
+          track("compare", { terms: label, term_count: allTerms.length });
+      }
     }
     setSearching(true);
     const ctrl = new AbortController();
@@ -281,8 +302,11 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
       )
         .then((lists) => {
           if (ctrl.signal.aborted) return;
-          setDocs(mergeDocs(lists, sort));
+          const merged = mergeDocs(lists, sort);
+          setDocs(merged);
           setSearching(false);
+          if (merged.length === 0)
+            track("zero_results", { terms: terms.join(" vs "), sort });
         })
         .catch((e) => {
           if (!ctrl.signal.aborted && e?.name !== "AbortError") {
@@ -369,7 +393,12 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
   // fixed across renders so the React.memo'd sparklines that receive it as
   // `onPick` don't all re-render when an unrelated bit of state changes.
   const pickTerms = useCallback((terms: string[]) => {
-    setQueries(terms.slice(0, MAX_QUERIES).map((text, i) => ({ id: `q${i}`, text })));
+    const picked = terms.slice(0, MAX_QUERIES);
+    track("example_pick", {
+      terms: picked.join(" vs "),
+      term_count: picked.length,
+    });
+    setQueries(picked.map((text, i) => ({ id: `q${i}`, text })));
     setTermFilter(null);
     setByAuthor(null);
     setCommentsOnly(false);
@@ -406,6 +435,11 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
     setCommentsOnly((v) => {
       const next = !v;
       if (next && (sort === "score" || sort === "discussed")) setSort("relevance");
+      track("filter_toggle", {
+        kind: "comments_only",
+        value: "comments",
+        active: next,
+      });
       return next;
     });
 
@@ -506,6 +540,7 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
             target="_blank"
             rel="noreferrer"
             className="text-[color:var(--hn-orange)] whitespace-nowrap"
+            onClick={() => trackOutbound("upstash", "pitch")}
           >
             <span
               className="inline-block mr-1"
@@ -612,7 +647,10 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
                   className={sort === k ? "active" : ""}
                   disabled={disabled}
                   title={title}
-                  onClick={() => setSort(k)}
+                  onClick={() => {
+                    setSort(k);
+                    track("sort_change", { sort: k });
+                  }}
                 >
                   {label}
                 </button>
@@ -659,11 +697,18 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
                       style={{ borderColor: s.color }}
                       title={on ? "show all terms again" : `only show posts matching “${s.text}”`}
                       onClick={() =>
-                        setTermFilter((cur) =>
-                          cur && cur.toLowerCase() === s.text.toLowerCase()
-                            ? null
-                            : s.text,
-                        )
+                        setTermFilter((cur) => {
+                          const next =
+                            cur && cur.toLowerCase() === s.text.toLowerCase()
+                              ? null
+                              : s.text;
+                          track("filter_toggle", {
+                            kind: "term",
+                            value: s.text,
+                            active: next !== null,
+                          });
+                          return next;
+                        })
                       }
                     >
                       <span className="trend-dot" style={{ background: s.color }} />
@@ -683,7 +728,15 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
                     data-active={byAuthor === a.key}
                     title={`only show posts from ${a.key}`}
                     onClick={() =>
-                      setByAuthor((cur) => (cur === a.key ? null : a.key))
+                      setByAuthor((cur) => {
+                        const next = cur === a.key ? null : a.key;
+                        track("filter_toggle", {
+                          kind: "author",
+                          value: a.key,
+                          active: next !== null,
+                        });
+                        return next;
+                      })
                     }
                   >
                     {a.key}

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import type { HnDoc } from "@/lib/hn-search";
+import { track } from "@/lib/analytics";
 
 function timeAgo(iso: string): string {
   const ms = Date.now() - new Date(iso).getTime();
@@ -178,7 +179,14 @@ function StoryRow({
       </td>
       <td className="py-1">
         <span>
-          <a href={href} target="_blank" rel="noreferrer noopener">
+          <a
+            href={href}
+            target="_blank"
+            rel="noreferrer noopener"
+            onClick={() =>
+              track("result_click", { kind: "story", rank, term: query })
+            }
+          >
             {highlight(d.title, query)}
           </a>
           {domain ? <span className="story-domain"> ({domain})</span> : null}
@@ -273,6 +281,9 @@ function CommentRow({
               href={href}
               target="_blank"
               rel="noreferrer noopener"
+              onClick={() =>
+                track("result_click", { kind: "comment", rank, term: query })
+              }
             >
               comment ›
             </a>{" "}

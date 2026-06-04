@@ -20,6 +20,7 @@ import {
 import { COMPARISONS } from "@/lib/examples";
 import { JsonLd } from "@/app/components/JsonLd";
 import { LandingHeader, LandingFooter } from "@/app/components/LandingChrome";
+import { OutboundLink } from "@/app/components/OutboundLink";
 
 export const metadata: Metadata = {
   title: "How it works",
@@ -144,14 +145,14 @@ export default function HowItWorksPage() {
         <p className="mt-1">
           About 45 million Hacker News items from {HISTORY_FROM_YEAR}–
           {HISTORY_TO_YEAR} are stored as plain Redis hashes and indexed with{" "}
-          <a
+          <OutboundLink
+            destination="upstash"
+            location="how_it_works"
             href="https://upstash.com/docs/redis/search"
-            target="_blank"
-            rel="noreferrer"
             className="text-[color:var(--hn-orange)]"
           >
             Upstash Redis Search
-          </a>
+          </OutboundLink>
           . Every chart is computed live, with no separate analytics warehouse:
         </p>
         <ul className="mt-1 list-disc pl-5 space-y-1">

@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Script from "next/script";
 import "./globals.css";
 import { JsonLd } from "./components/JsonLd";
+import { WebVitals } from "./components/WebVitals";
 import {
   SITE_URL,
   SITE_NAME,
@@ -117,6 +118,7 @@ export default function RootLayout({
             gtag('config', 'G-RNWSKXGPQD');
           `}
         </Script>
+        <WebVitals />
         <JsonLd data={siteJsonLd} />
         {children}
       </body>
