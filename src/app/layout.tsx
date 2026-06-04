@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Script from "next/script";
 import "./globals.css";
 import { JsonLd } from "./components/JsonLd";
 import {
@@ -103,6 +104,19 @@ export default function RootLayout({
         <meta property="og:logo" content={`${SITE_URL}/icon.svg`} />
       </head>
       <body>
+        {/* Google Analytics (gtag.js) */}
+        <Script
+          src="https://www.googletagmanager.com/gtag/js?id=G-RNWSKXGPQD"
+          strategy="afterInteractive"
+        />
+        <Script id="ga-gtag" strategy="afterInteractive">
+          {`
+            window.dataLayer = window.dataLayer || [];
+            function gtag(){dataLayer.push(arguments);}
+            gtag('js', new Date());
+            gtag('config', 'G-RNWSKXGPQD');
+          `}
+        </Script>
         <JsonLd data={siteJsonLd} />
         {children}
       </body>
