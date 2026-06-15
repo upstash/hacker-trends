@@ -24,7 +24,7 @@ export const runtime = "edge";
 // How long the edge/CDN may serve a cached query response before refetching, and
 // how long it may serve a stale one while revalidating in the background. The HN
 // index is rebuilt by a periodic ingest (not live), and these are trend queries
-// over 18 years of data, so an hour of staleness is invisible — but it turns the
+// over 18 years of data, so an hour of staleness is invisible - but it turns the
 // ~600ms Upstash query into a ~50ms CDN hit for every repeat of a given query
 // (and the popular gallery terms are shared across all visitors). This is the
 // single biggest latency win; the query itself dominates and caching skips it.
@@ -49,8 +49,8 @@ export async function GET(req: Request) {
 
   // `op=thread`: resolve the root story a comment hangs under, so the result
   // list can label it `on thread "<title>"`. Our index stores only each item's
-  // immediate `parent`, so we walk parents up to the story — a few HGETs deep
-  // at most — all against the same Upstash index (no external HN API).
+  // immediate `parent`, so we walk parents up to the story - a few HGETs deep
+  // at most - all against the same Upstash index (no external HN API).
   if (params.get("op") === "thread") return resolveThread(params.get("id"));
 
   const path = encodePath(argsFromParams(params));
@@ -79,7 +79,7 @@ export async function GET(req: Request) {
 /**
  * Walk a comment's parent chain in the Upstash index until we reach the story
  * it belongs to, returning `{ id, title }` for that story. Bounded to a handful
- * of hops (HN threads are shallow) and tolerant of gaps — a dead/missing
+ * of hops (HN threads are shallow) and tolerant of gaps - a dead/missing
  * ancestor (we don't index dead items) just ends the walk with what we have.
  */
 async function resolveThread(startId: string | null): Promise<Response> {

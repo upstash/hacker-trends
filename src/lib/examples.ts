@@ -469,7 +469,7 @@ export const COMPARISONS: Comparison[] = [
   {
     terms: ["unreal", "unity", "godot"],
     story:
-      "Three game engines, one shared earthquake: all three spike together in the Sept-2023 Unity runtime-fee fiasco — Unity's self-inflicted blow-up, with Unreal and Godot surging the same month as developers threatened to jump ship.",
+      "Three game engines, one shared earthquake: all three spike together in the Sept-2023 Unity runtime-fee fiasco - Unity's self-inflicted blow-up, with Unreal and Godot surging the same month as developers threatened to jump ship.",
   },
   {
     terms: ["cpu", "gpu", "ram"],

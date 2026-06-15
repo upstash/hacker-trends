@@ -68,7 +68,7 @@ export function buildOgChart(
 
 /**
  * Render the chart (gridlines + area fills + lines + peak dots) as a standalone
- * SVG string, ready to embed as a data-URI <img> in Satori. Shapes only — peak
+ * SVG string, ready to embed as a data-URI <img> in Satori. Shapes only - peak
  * number labels are drawn as Satori <div>s on top, since text in a rasterized
  * SVG would need an embedded font.
  */

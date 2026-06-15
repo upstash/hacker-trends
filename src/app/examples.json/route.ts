@@ -4,7 +4,7 @@
  *
  * Why this exists (web-vitals): the homepage used to `await getExamplesData()`
  * inside its server render, so nothing painted until a multi-MB Redis GET + a
- * ~190-term transcode finished — a ~2.6s LCP. The gallery data isn't needed for
+ * ~190-term transcode finished - a ~2.6s LCP. The gallery data isn't needed for
  * first paint (the gallery's text/links come from the static catalog), so we
  * lift it out to this endpoint and the client fetches it AFTER the shell paints.
  *
@@ -33,7 +33,7 @@ export async function GET() {
     const wire = encodeExamplesWire(await getExamplesData());
     return Response.json(wire, { headers: { "cache-control": CDN_CACHE } });
   } catch (e) {
-    // Never cache a failure — let the next request retry against Redis.
+    // Never cache a failure - let the next request retry against Redis.
     return Response.json(
       { error: (e as Error).message },
       { status: 502, headers: { "cache-control": "no-store" } },

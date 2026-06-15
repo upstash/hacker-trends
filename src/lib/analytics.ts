@@ -5,19 +5,19 @@
  * stray param. All of these fire client-side only; if gtag hasn't loaded (SSR,
  * an ad-blocker, the script still in flight) the call is a silent no-op.
  *
- * Event vocabulary — what we actually want to learn from this demo:
- *   search        — a term-set was searched (the headline signal: what people
+ * Event vocabulary - what we actually want to learn from this demo:
+ *   search        - a term-set was searched (the headline signal: what people
  *                   look up). `compare` rides alongside it when 2+ terms.
- *   compare        — a multi-term comparison ran (which combos people try).
- *   example_pick   — a gallery sparkline was clicked to load its terms.
- *   result_click   — a result row was opened on Hacker News.
- *   sort_change    — the result sort mode was switched.
- *   filter_toggle  — a term / author / comments-only filter was toggled.
- *   zero_results   — a search settled with no matches (content/data gaps).
- *   see_code_open  — the "see the code" panel was expanded (is the pitch landing?).
- *   code_tab       — a tab inside that panel was switched.
- *   outbound_click — a link off-site to Upstash or GitHub (the conversion win).
- *   web_vital      — a Core Web Vital sample (perf on real traffic).
+ *   compare        - a multi-term comparison ran (which combos people try).
+ *   example_pick   - a gallery sparkline was clicked to load its terms.
+ *   result_click   - a result row was opened on Hacker News.
+ *   sort_change    - the result sort mode was switched.
+ *   filter_toggle  - a term / author / comments-only filter was toggled.
+ *   zero_results   - a search settled with no matches (content/data gaps).
+ *   see_code_open  - the "see the code" panel was expanded (is the pitch landing?).
+ *   code_tab       - a tab inside that panel was switched.
+ *   outbound_click - a link off-site to Upstash or GitHub (the conversion win).
+ *   web_vital      - a Core Web Vital sample (perf on real traffic).
  */
 
 // gtag is defined by the inline snippet in app/layout.tsx.
@@ -61,7 +61,7 @@ export function track<K extends keyof EventMap>(name: K, params: EventMap[K]) {
   window.gtag("event", name, clean);
 }
 
-/** Convenience for the off-site links — the metric the demo ultimately cares
+/** Convenience for the off-site links - the metric the demo ultimately cares
  *  about (a click through to Upstash / the repo). */
 export function trackOutbound(
   destination: "upstash" | "github",

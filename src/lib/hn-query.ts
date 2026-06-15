@@ -66,8 +66,8 @@ export function tokenize(q: string): string[] {
 // How hard an exact-phrase title match outranks scattered token matches. Kept
 // deliberately GENTLE: it's a tiebreaker among comparably-popular results, not
 // an override. At 3 (vs the title token's $boost of 5) it demotes off-topic
-// scatter — `vision pro` stops surfacing "Gemini 3 Pro: the frontier of vision
-// AI" — while still keeping hugely-upvoted near-misses (the "self-hosting" mega
+// scatter - `vision pro` stops surfacing "Gemini 3 Pro: the frontier of vision
+// AI" - while still keeping hugely-upvoted near-misses (the "self-hosting" mega
 // threads under the query `self hosted`) at the top. Higher values (5, 10) start
 // burying those popular variants under tiny exact-title posts, so we don't.
 const PHRASE_BOOST = 3.0;
@@ -85,7 +85,7 @@ export type FilterOpts = { phraseBoost?: boolean };
  * `opts.phraseBoost` (search path only) additionally rewards docs whose TITLE
  * contains the full query as an adjacent phrase. This is the one place the
  * search and trend filters legitimately diverge: ranking cares about phrase
- * adjacency, a histogram count does not — and the aggregate path leaves it off
+ * adjacency, a histogram count does not - and the aggregate path leaves it off
  * so the trend snippet stays minimal. Crucially it does NOT change the matched
  * SET (a title containing the phrase already contains every token), so doc
  * counts are identical with or without it; it only moves matches up the order.
@@ -121,7 +121,7 @@ export function buildFilter(
   const must: Record<string, unknown>[] = [];
 
   // A term is a *mention*: it must appear in the title or the body. We don't
-  // match it against the author handle — for a trend line "who posted it" is
+  // match it against the author handle - for a trend line "who posted it" is
   // noise (and a stray `{ by: "openai" }` in the snippet just confuses).
   const tokenArms = tokens.map(
     (t) => ({ $or: [titleClause(t), textClause(t)] }) as Record<string, unknown>,
@@ -130,7 +130,7 @@ export function buildFilter(
   // Multi-word phrase boost: fold an adjacent-phrase title clause into the FIRST
   // token's $or. It can't sit as its own top-level arm ($and and $or can't be
   // siblings at one level), and folding it here is exactly equivalent for
-  // scoring — the arm still requires that token, and a phrase match implies it.
+  // scoring - the arm still requires that token, and a phrase match implies it.
   // Single-token queries have no phrase to boost, so we skip them.
   if (opts?.phraseBoost && tokens.length > 1) {
     (tokenArms[0].$or as unknown[]).push({
@@ -170,7 +170,7 @@ export type SearchArgsOpts = {
 //   + COMMENTS_FACTOR * log1p(comment count)
 // Tuned over many example queries (scripts/eval-relevance.ts). Points lead
 // comments so a quietly-upvoted post isn't buried, but comments matter enough
-// to surface the genuinely-*discussed* threads a pure-upvote sort misses — e.g.
+// to surface the genuinely-*discussed* threads a pure-upvote sort misses - e.g.
 // `rust` then leads with "A Sad Day for Rust" / "Rust Moderation Team Resigns"
 // (800–1200 upvotes but 800–1000 comments) instead of just "Announcing Rust 1.0".
 const POINTS_FACTOR = 50;
@@ -262,8 +262,8 @@ export function buildAggregateArgs(opts: AggregateArgsOpts): (string | number)[]
  *  array of primitives, or a small object of inlineable values. This is what
  *  lets `{ $eq: "bitcoin", $boost: 5 }` stay horizontal instead of exploding
  *  into a tall column. Mirrors the data browser's `toJsLiteral` formatter. */
-// A wrapper object may hold up to 2 keys; but a *flat* object — every value a
-// scalar — may hold up to 3, so a scoreFunc field
+// A wrapper object may hold up to 2 keys; but a *flat* object - every value a
+// scalar - may hold up to 3, so a scoreFunc field
 // `{ field: "score", modifier: "log1p", factor: 50 }` stays on one line like the
 // docs show. The extra key is allowed ONLY when flat, so the 3-key `aggregations`
 // block (whose values are nested objects) still expands one key per line instead

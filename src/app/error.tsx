@@ -66,7 +66,7 @@ export default function Error({
           Something threw on the server. It worked on our machine, which is the
           highest praise software can receive. Top comment is just{" "}
           <span className="italic">&ldquo;have you tried turning Redis off
-          and on again?&rdquo;</span> — and honestly, that&rsquo;s what the
+          and on again?&rdquo;</span> - and honestly, that&rsquo;s what the
           button below does.
         </p>
 

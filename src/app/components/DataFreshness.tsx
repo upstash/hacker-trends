@@ -7,7 +7,7 @@ import { searchPosts } from "@/lib/hn-search";
  * A tiny "synced · 6h ago" badge for the header.
  *
  * It measures how fresh the *data* is, not when we wrote it to Upstash: the
- * timestamp shown is the single most-recent Hacker News item in the index — i.e.
+ * timestamp shown is the single most-recent Hacker News item in the index - i.e.
  * the cutoff of the last monthly Parquet we ingested. That's the honest signal,
  * because if the daily re-ingest (GitHub Action) ever stalls, this number simply
  * keeps climbing instead of falsely reporting "just refreshed".

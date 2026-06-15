@@ -1,10 +1,10 @@
 /**
- * Precomputed, per-term editorial analysis — two short paragraphs of real,
+ * Precomputed, per-term editorial analysis - two short paragraphs of real,
  * non-templated prose about what the mention curve actually shows (the spikes,
  * the story behind the peak, the trajectory).
  *
  * This is the content that turns a top /trends page from a templated
- * data-swap into something with genuinely unique value — the single biggest
+ * data-swap into something with genuinely unique value - the single biggest
  * defense against being lumped in with "scaled content" by search engines, and
  * the prose an LLM answer is most likely to quote. It's authored ahead of time
  * from each term's real histogram + top stories (dump the data with
@@ -28,20 +28,20 @@ export const TREND_ANALYSIS: Record<string, TrendAnalysis> = {
   },
   chatgpt: {
     paragraphs: [
-      "ChatGPT first showed up on Hacker News in 2022, the year of its launch, and mentions climbed sharply. The curve peaks in March 2023 with 7,776 mentions, during the early wave of public adoption, and the lifetime total reaches 109,979 mentions — among the highest in this set.",
+      "ChatGPT first showed up on Hacker News in 2022, the year of its launch, and mentions climbed sharply. The curve peaks in March 2023 with 7,776 mentions, during the early wave of public adoption, and the lifetime total reaches 109,979 mentions - among the highest in this set.",
       "Discussion spans product features (ChatGPT Search, Canvas) and controversies, including a court order over retaining deleted chat logs and threads on the model confidently inventing features that don’t exist. Activity stayed high through 2026, making it one of the most persistently discussed terms on the site.",
     ],
   },
   deepseek: {
     paragraphs: [
-      "DeepSeek first appears in 2023 but was a minor presence until early 2025. The curve spikes hard in January 2025 with 3,512 mentions, coinciding with the release of DeepSeek-R1, and the lifetime total is 10,115 mentions — most of it concentrated in that single surge.",
+      "DeepSeek first appears in 2023 but was a minor presence until early 2025. The curve spikes hard in January 2025 with 3,512 mentions, coinciding with the release of DeepSeek-R1, and the lifetime total is 10,115 mentions - most of it concentrated in that single surge.",
       "The conversation centered on R1’s reasoning approach and its open release, with threads on the reinforcement-learning paper, code performance, and competitive friction with OpenAI. Later 2025 releases like DeepSeek OCR and v3.2 kept the term active through 2026.",
     ],
   },
   "apple-silicon": {
     paragraphs: [
       "The phrase apple silicon registers as early as 2007, but only became a real topic with Apple’s Mac transition. Mentions peak in November 2020 with 851, when the M1 chip shipped, and benchmark threads showing the M1 MacBook Air outperforming higher-end Intel Macs dominated. The lifetime total is 14,102 mentions.",
-      "Early discussion mixed performance astonishment with porting problems — Docker failing to launch, Firefox being ported, and the Asahi Linux effort to run Linux on the new hardware. The term stayed active through 2026 as the platform matured.",
+      "Early discussion mixed performance astonishment with porting problems - Docker failing to launch, Firefox being ported, and the Asahi Linux effort to run Linux on the new hardware. The term stayed active through 2026 as the platform matured.",
     ],
   },
   crowdstrike: {
@@ -58,14 +58,14 @@ export const TREND_ANALYSIS: Record<string, TrendAnalysis> = {
   },
   "glp-1": {
     paragraphs: [
-      "GLP-1 shows up as early as 2009 in a clinical context, but mention volume rose with the weight-loss drug wave. The curve peaks in July 2025 with 185 mentions, and the lifetime total is 2,365 mentions — a steady recent climb rather than a single spike.",
+      "GLP-1 shows up as early as 2009 in a clinical context, but mention volume rose with the weight-loss drug wave. The curve peaks in July 2025 with 185 mentions, and the lifetime total is 2,365 mentions - a steady recent climb rather than a single spike.",
       "The conversation is broad and medical: threads on GLP-1 drugs as an economic disruptor, effects on life insurance, and emerging research links to substance-use disorders, colon-cancer survival, and migraine frequency. Interest remained active heading into 2026.",
     ],
   },
   "vision-pro": {
     paragraphs: [
       "The term vision pro registers from 2008 but only became a genuine topic with Apple’s headset. Mentions peak in January 2024 with 1,321, coinciding with the Apple Vision Pro launch, and the lifetime total is 6,494 mentions.",
-      "Early reviews dominated the discussion — assessments calling it magic “until it’s not,” reflections from former Oculus staff on what Apple got right, and practical notes on traveling with the device and third-party apps like a YouTube client. After the 2024 launch wave, attention declined.",
+      "Early reviews dominated the discussion - assessments calling it magic “until it’s not,” reflections from former Oculus staff on what Apple got right, and practical notes on traveling with the device and third-party apps like a YouTube client. After the 2024 launch wave, attention declined.",
     ],
   },
   nvidia: {
@@ -95,19 +95,19 @@ export const TREND_ANALYSIS: Record<string, TrendAnalysis> = {
   "sam-altman": {
     paragraphs: [
       "Sam Altman appears from 2007, first in a Y Combinator context, and accumulated 9,663 lifetime mentions. The curve peaks in November 2023 with 889 mentions, coinciding with his brief ousting from OpenAI and rapid reinstatement.",
-      "Top threads span that boardroom episode — including a former board member’s account — alongside his 2024 lawsuit from Elon Musk, critical commentary on taking him at his word, and earlier YC-era AMAs. Discussion remained active through 2026.",
+      "Top threads span that boardroom episode - including a former board member’s account - alongside his 2024 lawsuit from Elon Musk, critical commentary on taking him at his word, and earlier YC-era AMAs. Discussion remained active through 2026.",
     ],
   },
   claude: {
     paragraphs: [
-      "Mentions matching claude go back to 2007, but volume is dominated by Anthropic’s model and tooling releases. The curve peaks in February 2026 with 9,935 mentions — its most recent and largest month — and the lifetime total is 76,349 mentions.",
+      "Mentions matching claude go back to 2007, but volume is dominated by Anthropic’s model and tooling releases. The curve peaks in February 2026 with 9,935 mentions - its most recent and largest month - and the lifetime total is 76,349 mentions.",
       "Top threads track the product line: Claude 3.7 Sonnet with Claude Code, Claude 4, Sonnet 4.5, computer use, 1M-token context, and web search. The term was at its peak right at the end of the observed window in 2026, indicating still-rising attention.",
     ],
   },
   gemini: {
     paragraphs: [
       "The term gemini predates Google’s model (appearing from 2007), but recent volume reflects the AI product. The curve peaks in February 2026 with 2,699 mentions, and the lifetime total is 34,119 mentions.",
-      "Top discussion clusters around Google’s releases — Gemini 1.5, 2.0, Gemini 3, and the Gemini CLI — including a widely upvoted Show HN imagining a future HN front page. Activity was still climbing at the end of the window in 2026.",
+      "Top discussion clusters around Google’s releases - Gemini 1.5, 2.0, Gemini 3, and the Gemini CLI - including a widely upvoted Show HN imagining a future HN front page. Activity was still climbing at the end of the window in 2026.",
     ],
   },
   copilot: {
@@ -119,7 +119,7 @@ export const TREND_ANALYSIS: Record<string, TrendAnalysis> = {
   grok: {
     paragraphs: [
       "Mentions of grok span back to 2007, partly from unrelated programming usage, but recent volume reflects xAI’s assistant. The curve peaks in January 2026 with 838 mentions, and the lifetime total is 20,437 mentions.",
-      "On-topic threads track the product line — the initial Grok release, Grok 4, and Grok Code Fast 1 — plus discussion of its behavior when queried about politically charged topics on X. The term remained active into 2026.",
+      "On-topic threads track the product line - the initial Grok release, Grok 4, and Grok Code Fast 1 - plus discussion of its behavior when queried about politically charged topics on X. The term remained active into 2026.",
     ],
   },
   bitcoin: {
@@ -178,13 +178,13 @@ export const TREND_ANALYSIS: Record<string, TrendAnalysis> = {
   },
   semaglutide: {
     paragraphs: [
-      "Semaglutide — the compound behind Ozempic and Wegovy — first appears in 2020 and is a lower-volume term at 1,054 lifetime mentions. The curve peaks in October 2024 with 63 mentions, a modest spike in a steady upward trend.",
+      "Semaglutide - the compound behind Ozempic and Wegovy - first appears in 2020 and is a lower-volume term at 1,054 lifetime mentions. The curve peaks in October 2024 with 63 mentions, a modest spike in a steady upward trend.",
       "Discussion is clinical and practical: reduced alcohol addiction associations, an argument that the drug “changed the world,” patent-expiry timelines in several countries, and Ask HN threads on weight-loss experience. Interest persisted into 2026.",
     ],
   },
   openai: {
     paragraphs: [
-      "OpenAI first appears in 2015, the year it was founded, and totals 91,677 lifetime mentions — one of the largest in this set. The curve peaks in November 2023 with 5,674 mentions, the month of Sam Altman’s brief ousting and reinstatement.",
+      "OpenAI first appears in 2015, the year it was founded, and totals 91,677 lifetime mentions - one of the largest in this set. The curve peaks in November 2023 with 5,674 mentions, the month of Sam Altman’s brief ousting and reinstatement.",
       "Top threads span open-weights releases, the O3 ARC-AGI score, the Whisper speech-recognition release, the Scarlett Johansson “Sky” voice dispute, and Elon Musk’s lawsuit against the company. Discussion stayed heavily active through 2026.",
     ],
   },
@@ -208,7 +208,7 @@ export const TREND_ANALYSIS: Record<string, TrendAnalysis> = {
   },
   snowflake: {
     paragraphs: [
-      "The word snowflake appears on Hacker News from 2007 across many unrelated topics, which complicates the curve. Mentions peak in May 2024 with 240, and the lifetime total is 10,716 — though only some of that is about the data-cloud company rather than literal snowflakes or other uses.",
+      "The word snowflake appears on Hacker News from 2007 across many unrelated topics, which complicates the curve. Mentions peak in May 2024 with 240, and the lifetime total is 10,716 - though only some of that is about the data-cloud company rather than literal snowflakes or other uses.",
       "Among the clearly on-topic threads are discussions of why Snowflake is so expensive and reporting on the Snowflake-linked customer-data extortions in 2024. Because much of the matching content is off-topic, the trend here is best read quantitatively; genuine company discussion continued through 2026.",
     ],
   },
@@ -226,7 +226,7 @@ export const TREND_ANALYSIS: Record<string, TrendAnalysis> = {
   },
   sbf: {
     paragraphs: [
-      "SBF — Sam Bankman-Fried — first registers in 2010 but became prominent only with FTX’s collapse. The curve peaks sharply in October 2022 with 1,433 mentions, as the exchange imploded, and the lifetime total is 5,716 mentions.",
+      "SBF - Sam Bankman-Fried - first registers in 2010 but became prominent only with FTX’s collapse. The curve peaks sharply in October 2022 with 1,433 mentions, as the exchange imploded, and the lifetime total is 5,716 mentions.",
       "Top threads cover his arrest by Bahamian authorities, a secret “back door” to move billions off the books, his legal defense funding, and a since-deleted Sequoia profile calling him a future trillionaire. Discussion concentrated around the 2022–2023 collapse and trial.",
     ],
   },
@@ -238,8 +238,8 @@ export const TREND_ANALYSIS: Record<string, TrendAnalysis> = {
   },
   crypto: {
     paragraphs: [
-      "The term crypto spans both cryptography and cryptocurrency on Hacker News, appearing from 2007 and totaling 154,681 lifetime mentions — one of the highest here. The curve peaks in October 2022 with 5,006 mentions, during the FTX collapse and broader market turmoil.",
-      "Reflecting the dual meaning, top threads cover cryptography topics — NSA-related stories, post-quantum work, and the CIA’s Crypto AG operation — alongside cryptocurrency disillusionment like “I wasted years of my life in crypto.” The term stayed active through 2026.",
+      "The term crypto spans both cryptography and cryptocurrency on Hacker News, appearing from 2007 and totaling 154,681 lifetime mentions - one of the highest here. The curve peaks in October 2022 with 5,006 mentions, during the FTX collapse and broader market turmoil.",
+      "Reflecting the dual meaning, top threads cover cryptography topics - NSA-related stories, post-quantum work, and the CIA’s Crypto AG operation - alongside cryptocurrency disillusionment like “I wasted years of my life in crypto.” The term stayed active through 2026.",
     ],
   },
   metaverse: {
@@ -256,7 +256,7 @@ export const TREND_ANALYSIS: Record<string, TrendAnalysis> = {
   },
   ftx: {
     paragraphs: [
-      "FTX first appears in 2016, around the exchange’s founding, and totals 8,243 lifetime mentions. The curve spikes in October 2022 with 3,062 mentions — most of its lifetime volume — as the exchange collapsed.",
+      "FTX first appears in 2016, around the exchange’s founding, and totals 8,243 lifetime mentions. The curve spikes in October 2022 with 3,062 mentions - most of its lifetime volume - as the exchange collapsed.",
       "The top stories trace the implosion in sequence: Binance’s proposed acquisition and its withdrawal, FTX tapping customer accounts for risky bets, mysterious $600M+ outflows, the U.S. bankruptcy filing, and analysis of its balance sheet. Discussion concentrated almost entirely around late 2022.",
     ],
   },

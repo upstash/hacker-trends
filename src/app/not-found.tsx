@@ -27,7 +27,7 @@ export default function NotFound() {
         <h1 className="mt-2 text-[16pt] font-bold">Page not found</h1>
         <p className="mt-3 text-[10pt] leading-relaxed max-w-[480px] mx-auto">
           This URL never got enough upvotes to make the front page. It slid off{" "}
-          <span className="font-mono">/new</span> and now it lives here — in the
+          <span className="font-mono">/new</span> and now it lives here - in the
           great <span className="italic">[dead]</span> beyond.
         </p>
 

@@ -7,16 +7,16 @@
  *          + 10·groupVolume       // 0–3 category-level demand (ai/crypto/people=3)
  *
  *  Tier 1 (score ≥ 172) = custom analysis + top sitemap priority.
- *  Tier 2 (110 ≤ score < 172) = indexed/templated — IMPLICIT: any known catalog
+ *  Tier 2 (110 ≤ score < 172) = indexed/templated - IMPLICIT: any known catalog
  *    term/comparison not listed below.
  *  Tier 3 (score < 110) = noindex,follow + dropped from sitemap.
  *
- *  Hand-curated and meant to be edited — bump a term up/down by moving its slug
+ *  Hand-curated and meant to be edited - bump a term up/down by moving its slug
  *  between sets. Slugs are in termToSlug() form (site.ts): lowercase,
  *  non-alphanumeric runs collapsed to "-", outer dashes trimmed. Comparison
  *  slugs are comparisonSlug() form: each term slugged, joined with "-vs-". */
 
-/** Tier 1: highest click-potential — get model-authored analysis paragraphs and
+/** Tier 1: highest click-potential - get model-authored analysis paragraphs and
  *  sitemap priority 0.7. (~40 terms) */
 export const TIER1_SLUGS: ReadonlySet<string> = new Set([
   "gpt-4", "chatgpt", "deepseek", "apple-silicon", "crowdstrike", "section-230",
@@ -28,7 +28,7 @@ export const TIER1_SLUGS: ReadonlySet<string> = new Set([
   "gamestop", "ftx",
 ]);
 
-/** Tier 3: long-tail insider terms that can't realistically rank — kept crawlable
+/** Tier 3: long-tail insider terms that can't realistically rank - kept crawlable
  *  (robots index:false, follow:true) but removed from the sitemap so they don't
  *  dilute the site's quality average. (~107 terms) */
 export const TIER3_SLUGS: ReadonlySet<string> = new Set([
@@ -56,7 +56,7 @@ export const TIER3_SLUGS: ReadonlySet<string> = new Set([
   "semantic-versioning", "conway-s-law",
 ]);
 
-/** Curated comparisons too thin/obscure to index — noindex,follow, out of
+/** Curated comparisons too thin/obscure to index - noindex,follow, out of
  *  sitemap. Either the strongest term scores below the Tier-2 floor, or it's a
  *  build-tool / dev-relic relay (bundlers, config-mgmt, old NoSQL/editors,
  *  cross-platform mobile, API-protocol and JVM-language successions) whose

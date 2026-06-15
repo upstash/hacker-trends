@@ -7,7 +7,7 @@
  * request. For a term's monthly histogram we first try the single cached
  * examples key (one GET returns every catalog term's series); only a term
  * outside the catalog falls back to a live aggregate. Top stories are always a
- * single live SEARCH.QUERY — real HN headlines are exactly the indexable
+ * single live SEARCH.QUERY - real HN headlines are exactly the indexable
  * content these pages exist to surface.
  *
  * Server-only (reads the Upstash token); never import from a "use client" file.
@@ -66,7 +66,7 @@ async function bucketsFor(term: string): Promise<MonthCount[]> {
   }));
 }
 
-/** Top stories for a term, by upvotes — the headline list a landing page shows.
+/** Top stories for a term, by upvotes - the headline list a landing page shows.
  *  `type: "story"` so comments don't crowd out the front-page-able items. */
 async function topStories(term: string, limit = 12): Promise<HnDoc[]> {
   const raw = await redisCommand<unknown>(
@@ -113,7 +113,7 @@ export function statsFor(buckets: MonthCount[]): TermStats {
   };
 }
 
-/** A plain-language, factual one-liner stating the headline numbers up front —
+/** A plain-language, factual one-liner stating the headline numbers up front -
  *  the sentence an LLM answer or a featured snippet can lift verbatim. Built
  *  deterministically from the stats (no model), so it's always accurate. */
 export function trendSummary(term: string, stats: TermStats): string {
@@ -161,7 +161,7 @@ export type ComparisonSeries = {
   term: string;
   buckets: MonthCount[];
   stats: TermStats;
-  /** A few top headlines for this term — real, per-term content so a comparison
+  /** A few top headlines for this term - real, per-term content so a comparison
    *  page isn't just an overlaid chart (which read as thin/templated). */
   stories: HnDoc[];
 };

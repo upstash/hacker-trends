@@ -1,5 +1,5 @@
 /**
- * `/how-it-works` — the long-form explainer page.
+ * `/how-it-works` - the long-form explainer page.
  *
  * Exists for two reasons: (1) give humans the "what is this / how do I use it"
  * context the single-page tool doesn't dwell on, and (2) give search engines a
@@ -43,11 +43,11 @@ const FAQ: { q: string; a: string }[] = [
   },
   {
     q: "Where does the data come from?",
-    a: `It indexes roughly 45 million Hacker News items — stories and comments — spanning ${HISTORY_FROM_YEAR} to ${HISTORY_TO_YEAR}. Each item's title, text, author, type, timestamp, score, and comment count are stored as a Redis hash and indexed for full-text search.`,
+    a: `It indexes roughly 45 million Hacker News items - stories and comments - spanning ${HISTORY_FROM_YEAR} to ${HISTORY_TO_YEAR}. Each item's title, text, author, type, timestamp, score, and comment count are stored as a Redis hash and indexed for full-text search.`,
   },
   {
     q: "How far back does the data go?",
-    a: `The index covers Hacker News from ${HISTORY_FROM_YEAR} through ${HISTORY_TO_YEAR} — about 18 years of the front page and its comment threads.`,
+    a: `The index covers Hacker News from ${HISTORY_FROM_YEAR} through ${HISTORY_TO_YEAR} - about 18 years of the front page and its comment threads.`,
   },
   {
     q: "How often is the data refreshed?",
@@ -55,11 +55,11 @@ const FAQ: { q: string; a: string }[] = [
   },
   {
     q: "How is a term's popularity measured?",
-    a: "Each point on the line is the number of Hacker News posts and comments in that month whose title or body mentions the term — an honest, exact mention count, not a fuzzy or weighted score. The chart is a live date-histogram computed at query time.",
+    a: "Each point on the line is the number of Hacker News posts and comments in that month whose title or body mentions the term - an honest, exact mention count, not a fuzzy or weighted score. The chart is a live date-histogram computed at query time.",
   },
   {
     q: "What powers Hacker Trends?",
-    a: "It is built on Upstash Redis Search. The trend lines come from SEARCH.AGGREGATE date-histogram queries, and the list of stories behind each line comes from SEARCH.QUERY full-text search — both running directly against Upstash Redis with no separate analytics database.",
+    a: "It is built on Upstash Redis Search. The trend lines come from SEARCH.AGGREGATE date-histogram queries, and the list of stories behind each line comes from SEARCH.QUERY full-text search - both running directly against Upstash Redis with no separate analytics database.",
   },
   {
     q: "How are the top stories ranked?",
@@ -113,7 +113,7 @@ export default function HowItWorksPage() {
           Type any topic, tool, company, or person and Hacker Trends charts how
           often it has come up on Hacker News, month by month, since{" "}
           {HISTORY_FROM_YEAR}. Overlay several terms to watch their traction rise
-          and fall against each other — the same way you would compare search
+          and fall against each other - the same way you would compare search
           interest on Google Trends, but for the stories and comments that shaped
           the tech industry’s conversation.{" "}
           <Link href="/" className="text-[color:var(--hn-orange)]">
@@ -128,7 +128,7 @@ export default function HowItWorksPage() {
             line and the top stories behind it.
           </li>
           <li>
-            <strong>Compare</strong> up to five terms at once — each gets its own
+            <strong>Compare</strong> up to five terms at once - each gets its own
             colored line on a shared axis.
           </li>
           <li>
@@ -140,7 +140,7 @@ export default function HowItWorksPage() {
             comment), and sort by relevance, points, comments, or recency.
           </li>
           <li>
-            <strong>Share</strong> any view — the full state lives in the URL, so
+            <strong>Share</strong> any view - the full state lives in the URL, so
             a link reproduces the exact chart and filters.
           </li>
         </ul>
@@ -162,7 +162,7 @@ export default function HowItWorksPage() {
         <ul className="mt-1 list-disc pl-5 space-y-1">
           <li>
             The <strong>trend line</strong> is a <code>SEARCH.AGGREGATE</code>{" "}
-            date-histogram — one monthly bucket per point — filtered to items
+            date-histogram - one monthly bucket per point - filtered to items
             that actually mention the term.
           </li>
           <li>

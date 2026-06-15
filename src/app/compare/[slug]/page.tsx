@@ -60,7 +60,7 @@ export async function generateMetadata({
   const terms = termsForSlug(slug);
   if (terms.length < 2) return {};
   const label = joinTerms(terms);
-  const title = `${label} on Hacker News — popularity over time, compared`;
+  const title = `${label} on Hacker News - popularity over time, compared`;
   const description = `${label}: how each trended across ${HISTORY_FROM_YEAR}–${HISTORY_TO_YEAR} of Hacker News mentions, overlaid on one chart. See when the lead changed hands. Powered by Upstash Redis Search.`;
   const path = `/compare/${comparisonSlug(terms)}`;
   return {
@@ -68,8 +68,8 @@ export async function generateMetadata({
     description,
     alternates: { canonical: path },
     robots: isIndexedComparisonSlug(slug) ? undefined : { index: false, follow: true },
-    openGraph: { title: `${label} — Hacker News trends`, description, url: path, type: "article" },
-    twitter: { title: `${label} — Hacker News trends`, description },
+    openGraph: { title: `${label} - Hacker News trends`, description, url: path, type: "article" },
+    twitter: { title: `${label} - Hacker News trends`, description },
   };
 }
 
@@ -193,7 +193,7 @@ export default async function ComparePage({
             href={compareHref}
             className="inline-block text-[12px] font-semibold text-[color:var(--hn-orange)]"
           >
-            Open this comparison in the interactive tool — zoom to any date range
+            Open this comparison in the interactive tool - zoom to any date range
             and read the stories behind each spike →
           </Link>
         </div>
@@ -209,7 +209,7 @@ export default async function ComparePage({
         </div>
       )}
 
-      {/* top stories per term — real headlines behind each line, the unique
+      {/* top stories per term - real headlines behind each line, the unique
           content that lifts these pages above thin "two-lines-overlaid" templates */}
       {colored.some((s) => s.stories.length > 0) && (
         <div className="px-3 pt-6">
@@ -272,7 +272,7 @@ export default async function ComparePage({
         </ul>
       </div>
 
-      {/* cross-links to other curated comparisons — wire this page into the
+      {/* cross-links to other curated comparisons - wire this page into the
           link graph so crawlers reach the rest of the /compare set. */}
       {relatedComparisons.length > 0 && (
         <div className="px-3 pt-6">

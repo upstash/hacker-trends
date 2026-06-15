@@ -98,7 +98,7 @@ function ItemMeta({ item }: { item: AlgoliaItem }) {
   );
 }
 
-/** HN's own sanitized markup — safe to inject for this demo. Tailwind's preflight
+/** HN's own sanitized markup - safe to inject for this demo. Tailwind's preflight
  *  strips default link/paragraph styling, so we restyle inside `.hn-html`. */
 function HnHtml({ html }: { html: string | null }) {
   if (!html) return null;

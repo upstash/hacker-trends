@@ -5,7 +5,7 @@
 **Search 18 years of Hacker News and watch any term rise and fall over time.**
 
 [![Live Demo](https://img.shields.io/badge/Live_Demo-FF6600?style=for-the-badge&logo=ycombinator&logoColor=white)](https://hackernewstrends.com)
-[![Powered by Upstash Redis Search](https://img.shields.io/badge/Powered_by-Upstash_Redis_Search-DC2626?style=for-the-badge&logo=upstash&logoColor=white)](https://upstash.com/docs/redis/features/search)
+[![Powered by Upstash Redis Search](https://img.shields.io/badge/Powered_by-Upstash_Redis_Search-DC2626?style=for-the-badge&logo=upstash&logoColor=white)](https://upstash.com/docs/redis/search/introduction)
 [![Deploy on Vercel](https://img.shields.io/badge/Deploy_on-Vercel-000000?style=for-the-badge&logo=vercel&logoColor=white)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fupstash%2Fhacker-trends&env=UPSTASH_REDIS_REST_URL,UPSTASH_REDIS_REST_TOKEN&envDescription=Upstash%20Redis%20REST%20credentials&envLink=https%3A%2F%2Fupstash.com%2Fdocs%2Fredis%2Ffeatures%2Frestapi&project-name=hacker-trends&repository-name=hacker-trends)
 
 
@@ -20,17 +20,17 @@ often Hacker News talked about it, and the real posts and comments behind every
 spike. Search one term, or stack several on the same chart to see which one the
 internet actually cared about.
 
-The whole thing is a thin UI over **[Upstash Redis Search](https://upstash.com/docs/redis/features/search)**.
-There's no separate search engine to run — you store plain Redis hashes and
+The whole thing is a thin UI over **[Upstash Redis Search](https://upstash.com/docs/redis/search/introduction)**.
+There's no separate search engine to run - you store plain Redis hashes and
 define one index over them, and every search and every trend line is a single
 `@upstash/redis` call.
 
 ## What you can do
 
 - 🔎 **Search** ~45M Hacker News posts and comments, full-text, in milliseconds.
-- 📈 **See the trend** — mentions per month for any term, so you know exactly when it took off.
+- 📈 **See the trend** - mentions per month for any term, so you know exactly when it took off.
 - 🆚 **Compare** several terms on one chart and watch them rise and fall against each other.
-- 🧵 **Drill in** to the actual stories and comments behind each spike — who wrote them, and how the conversation splits between posts and replies.
+- 🧵 **Drill in** to the actual stories and comments behind each spike - who wrote them, and how the conversation splits between posts and replies.
 
 ## How it works
 
@@ -109,7 +109,7 @@ Open [localhost:3000](http://localhost:3000) and start searching.
 
 ## Tech stack
 
-- **[Upstash Redis Search](https://upstash.com/docs/redis/features/search)** via [`@upstash/redis`](https://github.com/upstash/redis-js) — the entire search + analytics backend.
+- **[Upstash Redis Search](https://upstash.com/docs/redis/search/introduction)** via [`@upstash/redis`](https://github.com/upstash/redis-js) - the entire search + analytics backend.
 - **[Next.js](https://nextjs.org)** (App Router) + React, deployed on **[Vercel](https://vercel.com)**.
 - Hacker News data from the monthly Parquet dumps on HuggingFace.
 

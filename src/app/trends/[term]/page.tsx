@@ -3,8 +3,8 @@
  *
  * One server-rendered page per curated catalog term (and any ad-hoc term),
  * showing the real Hacker-News mention histogram, the peak month, headline
- * stats, and the top stories behind the line — all crawlable, no client JS
- * required — then a clear path into the interactive tool. These long-tail pages
+ * stats, and the top stories behind the line - all crawlable, no client JS
+ * required - then a clear path into the interactive tool. These long-tail pages
  * are the bulk of the site's organic-search surface.
  */
 
@@ -55,8 +55,8 @@ export async function generateMetadata({
   const { term: slug } = await params;
   const term = slugToTerm(slug);
   const display = titleCase(term);
-  const title = `“${term}” on Hacker News — ${HISTORY_SPAN_YEARS} years of mentions, charted`;
-  const description = `How often "${term}" came up on Hacker News from ${HISTORY_FROM_YEAR} to ${HISTORY_TO_YEAR}: a live mention-over-time chart, the peak month, and the top stories — powered by Upstash Redis Search.`;
+  const title = `“${term}” on Hacker News - ${HISTORY_SPAN_YEARS} years of mentions, charted`;
+  const description = `How often "${term}" came up on Hacker News from ${HISTORY_FROM_YEAR} to ${HISTORY_TO_YEAR}: a live mention-over-time chart, the peak month, and the top stories - powered by Upstash Redis Search.`;
   const path = `/trends/${termToSlug(term)}`;
   return {
     title,
@@ -64,12 +64,12 @@ export async function generateMetadata({
     alternates: { canonical: path },
     robots: isIndexedTermSlug(slug) ? undefined : { index: false, follow: true },
     openGraph: {
-      title: `${display} — Hacker News trend`,
+      title: `${display} - Hacker News trend`,
       description,
       url: path,
       type: "article",
     },
-    twitter: { title: `${display} — Hacker News trend`, description },
+    twitter: { title: `${display} - Hacker News trend`, description },
   };
 }
 
@@ -182,13 +182,13 @@ export default async function TrendPage({
             href={compareHref}
             className="inline-block text-[12px] font-semibold text-[color:var(--hn-orange)]"
           >
-            Explore “{term}” in the interactive tool — filter by date, sort, and
+            Explore “{term}” in the interactive tool - filter by date, sort, and
             compare against other terms →
           </Link>
         </div>
       </div>
 
-      {/* analysis — model-authored prose for the top terms; the unique,
+      {/* analysis - model-authored prose for the top terms; the unique,
           non-templated content that makes this page worth indexing on its own */}
       {analysis && analysis.paragraphs.length > 0 && (
         <div className="px-3 pt-6">
@@ -241,7 +241,7 @@ export default async function TrendPage({
         </div>
       )}
 
-      {/* related — wire this page into the catalog's link graph: comparisons it
+      {/* related - wire this page into the catalog's link graph: comparisons it
           appears in, same-category siblings, and a few picks from elsewhere.
           Dense internal linking is what gets these long-tail pages crawled and
           ranked, so every link is a real <a href> to a clean landing URL. */}

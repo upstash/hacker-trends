@@ -9,7 +9,7 @@
  * links come from the static catalog (so SEO is unaffected), and the client
  * fetches the histogram data from the CDN-cached `/examples.json` AFTER paint.
  *
- * Everything interactive — the compare/search tool AND the embedded gallery —
+ * Everything interactive - the compare/search tool AND the embedded gallery -
  * lives in <HackerTrends/>, so clicking an example swaps the query in place
  * instead of navigating.
  */

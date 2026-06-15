@@ -2,7 +2,7 @@
  * Archived item view: `/archived/<id>`.
  *
  * HN hides comments/stories that get flagged, killed, or deleted after we
- * indexed them — but the Algolia HN Search archive still mirrors the content.
+ * indexed them - but the Algolia HN Search archive still mirrors the content.
  * This route renders that archived item (and its reply tree) in the app's HN
  * visual style, so the "archived ›" links in the results stay readable instead
  * of dumping raw JSON.

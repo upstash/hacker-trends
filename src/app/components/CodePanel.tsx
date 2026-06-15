@@ -59,8 +59,8 @@ export function CodePanel({ q, sort, from, to, by, type }: Props) {
           className="code-toggle"
           onClick={() =>
             setOpen((o) => {
-              // Only the open direction is interesting — "did people look at the
-              // code?" — so log on expand, not on collapse.
+              // Only the open direction is interesting - "did people look at the
+              // code?" - so log on expand, not on collapse.
               if (!o) track("see_code_open", { tab });
               return !o;
             })

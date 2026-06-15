@@ -59,7 +59,7 @@ function viewHref(terms: string[]): string {
  *   - hover a month        → inline month + per-term counts (no navigation)
  */
 // React.memo so the ~190 gallery sparklines don't all re-render (and re-run the
-// densify/path math below) every time the parent's state changes — e.g. clicking
+// densify/path math below) every time the parent's state changes - e.g. clicking
 // one comparison. The parent precomputes stable `series`/`onPick` props
 // (HackerTrends), so the default shallow prop compare lets every untouched card
 // bail out, which is what keeps the interaction (INP) cheap.
@@ -172,7 +172,7 @@ export const MiniTrend = memo(function MiniTrend({ series, story, onPick }: Prop
 
         {/* Only emit the line/area geometry once there's data. Each path is a
             ~240-point string; rendering all ~300 gallery charts' paths on the
-            server (where the histograms aren't loaded yet — they arrive via the
+            server (where the histograms aren't loaded yet - they arrive via the
             client `/examples.json` fetch) ballooned the homepage HTML to ~2 MB
             of flat-line strings for nothing. Gated on hasData, the server ships
             just the empty chart frames + the (SEO-relevant) titles/links/stories,

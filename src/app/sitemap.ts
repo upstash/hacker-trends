@@ -12,7 +12,7 @@ import {
 } from "@/lib/site";
 
 // Only indexed pages belong in the sitemap. Tier-3 trend terms and the
-// thin/obscure comparisons are noindex,follow — still crawlable via internal
+// thin/obscure comparisons are noindex,follow - still crawlable via internal
 // links, but kept out of the sitemap so they don't dilute the indexed set.
 export default function sitemap(): MetadataRoute.Sitemap {
   const lastModified = CONTENT_UPDATED;

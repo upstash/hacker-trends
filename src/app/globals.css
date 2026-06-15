@@ -303,7 +303,7 @@ input.hn-input:focus { border-color: var(--hn-orange); }
   letter-spacing: 0.04em;
   font-size: 9px;
 }
-/* a clear on/off pill — "only <term>" / "comments only" */
+/* a clear on/off pill - "only <term>" / "comments only" */
 .filter-toggle {
   display: inline-flex;
   align-items: center;
@@ -372,7 +372,7 @@ input.hn-input:focus { border-color: var(--hn-orange); }
 .code-panel { border: 1px solid var(--hn-subtle); background: #fff; }
 
 /* Header bar: toggle on the left, "powered by" pinned to the right. On a phone
-   the row can't hold both, so it wraps — the toggle keeps its own line and the
+   the row can't hold both, so it wraps - the toggle keeps its own line and the
    github + "powered by" links drop, right-aligned, to the next line (rather than
    the toggle text crushing into a ragged 4-line column). */
 .code-head {

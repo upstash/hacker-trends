@@ -2,7 +2,7 @@
  * A non-interactive, server-rendered trend chart for the SEO landing pages.
  *
  * Unlike <MiniTrend/> (client component, hover + click) this is plain SVG markup
- * with no "use client" — it renders fully on the server so crawlers (and no-JS
+ * with no "use client" - it renders fully on the server so crawlers (and no-JS
  * visitors) see the actual chart. It shares the exact monthly time grid with
  * every other chart in the app (trend-time.ts), so a landing-page line matches
  * the interactive one bar-for-bar. Used at a larger size than the gallery

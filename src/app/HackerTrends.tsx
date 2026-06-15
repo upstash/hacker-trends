@@ -113,8 +113,8 @@ function sumAuthors(
 export function HackerTrends({ initial }: { initial: ShareState }) {
   // The gallery histograms are fetched AFTER first paint from the CDN-cached
   // `/examples.json` (see that route + page.tsx) rather than blocking the server
-  // render. Until they arrive the gallery still renders its full structure —
-  // titles, links, stories from the static catalog — with flat sparklines; only
+  // render. Until they arrive the gallery still renders its full structure -
+  // titles, links, stories from the static catalog - with flat sparklines; only
   // the line shapes fill in once this resolves.
   const [examplesData, setExamplesData] = useState<ExamplesWire | null>(null);
   useEffect(() => {
@@ -163,7 +163,7 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
   // genuinely new comparison (blank + reload) from a same-terms refetch.
   const lastTermsKey = useRef("");
   // The first results run is the URL-seeded load (default terms or a shared
-  // link), not a user-initiated search — skip logging it so the GA `search`
+  // link), not a user-initiated search - skip logging it so the GA `search`
   // event counts what people actually look up, not every page open.
   const firstSearch = useRef(true);
   const [searching, setSearching] = useState(false);
@@ -267,7 +267,7 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
       setDocs([]);
       setExpanded(false);
       lastTermsKey.current = termsKey;
-      // Log the search (and, when several terms, the comparison) — but not the
+      // Log the search (and, when several terms, the comparison) - but not the
       // initial URL-seeded load. `allTerms` is the full term-set the user sees;
       // `terms` may be a single-term subset when the "only show <term>" filter
       // is on, which isn't what we want to report as the search.
@@ -429,7 +429,7 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
   };
 
   // Comments carry no upvote score and no descendant count of their own (HN
-  // doesn't expose either — see scripts/ingest.ts), so "most upvoted" and "most
+  // doesn't expose either - see scripts/ingest.ts), so "most upvoted" and "most
   // discussed" both sort comments by all-zeros. Disable them while comments-only
   // is on, and if one was the active sort, fall back to relevance.
   const toggleCommentsOnly = () =>
@@ -473,7 +473,7 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
   // Precompute the gallery's per-card MiniSeries ONCE per data change. The
   // sparklines are React.memo'd, so as long as their `series` prop keeps a
   // stable identity between renders they skip re-rendering (and re-densifying)
-  // entirely — that's what takes the comparison-click interaction from ~400ms
+  // entirely - that's what takes the comparison-click interaction from ~400ms
   // (re-pathing all ~190 charts) down to a cheap parent re-render.
   const comparisonItems = useMemo(
     () =>
@@ -511,7 +511,7 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
           header carries the visual brand, while crawlers and screen readers still
           get a single, keyword-rich <h1> for the page. */}
       <h1 className="sr-only">
-        Hacker Trends — see how any topic, tool, or person trended across 18
+        Hacker Trends - see how any topic, tool, or person trended across 18
         years of Hacker News
       </h1>
       {/* Header bar -------------------------------------------------- */}
@@ -658,7 +658,7 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
                 </button>
               );
             })}
-            {/* "only comments" rides the same tab strip — it's a filter, not a
+            {/* "only comments" rides the same tab strip - it's a filter, not a
                 sort, so a divider sets it apart from the four sort tabs. */}
             <span className="tab-divider" aria-hidden="true" />
             <button
@@ -670,7 +670,7 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
             </button>
           </div>
           {!searching && docs.length > 0 && (
-            // a fun "scale" footnote — desktop-only so it doesn't crowd a phone.
+            // a fun "scale" footnote - desktop-only so it doesn't crowd a phone.
             <span className="ml-auto hidden sm:inline whitespace-nowrap text-[10px] text-[color:var(--hn-subtle)]">
               {CORPUS} keys queried
             </span>
@@ -678,7 +678,7 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
         </div>
       </div>
 
-      {/* filters: narrow the merged list — by term, by author. (comments-only
+      {/* filters: narrow the merged list - by term, by author. (comments-only
           lives in the sort-tab strip above now.) The wrapper renders (with a
           reserved min-height) as soon as there are terms, even before the
           aggregates that populate it land, so the row doesn't pop in and shift

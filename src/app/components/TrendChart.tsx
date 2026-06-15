@@ -12,7 +12,7 @@ const YEAR_MS = 365.25 * 24 * 3600 * 1000;
 
 // Preset view windows. `years` is how far back from the latest data the X-axis
 // starts; `null` is the full 2007→2026 span. This only reframes the *rendered*
-// axis — the underlying 30-day slot grid (trend-time.ts) is untouched, so a
+// axis - the underlying 30-day slot grid (trend-time.ts) is untouched, so a
 // click still maps to the same `?from=&to=` bucket regardless of zoom.
 const WINDOWS: { label: string; years: number | null }[] = [
   { label: "All", years: null },
@@ -100,7 +100,7 @@ export function TrendChart({ series, range, onSelectRange, loading }: Props) {
   const [drag, setDrag] = useState<{ x0: number; x1: number } | null>(null);
   const [hoverX, setHoverX] = useState<number | null>(null);
   // Which preset window is active (index into WINDOWS). View-only state, local
-  // to the chart — it reframes the axis without changing the queried data.
+  // to the chart - it reframes the axis without changing the queried data.
   const [winIdx, setWinIdx] = useState(0);
 
   // The visible slot window [slotLo, SLOTS): always anchored to the latest data

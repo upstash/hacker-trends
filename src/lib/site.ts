@@ -28,12 +28,12 @@ export const SITE_NAME = "Hacker Trends";
  *  (the bare brand, used for og:siteName, JSON-LD, and the child-route template),
  *  this carries the "Hacker News" keyword so the homepage reinforces the query
  *  it ranks for ("hacker news trends") instead of leaning on the EMD alone.
- *  Kept focused on that one winnable cluster — NOT diluted toward "hacker news
+ *  Kept focused on that one winnable cluster - NOT diluted toward "hacker news
  *  search" (a query Algolia owns). ~43 chars, fits the SERP without truncation. */
-export const HOME_TITLE = "Hacker Trends — Topic Trends on Hacker News";
+export const HOME_TITLE = "Hacker Trends - Topic Trends on Hacker News";
 
 /** The descriptive one-liner used for og:title / social cards (NOT the browser
- *  tab title — that stays the short brand name, per design). */
+ *  tab title - that stays the short brand name, per design). */
 export const SITE_TAGLINE = "18 years of Hacker News, charted";
 
 /** Meta description: not a ranking factor, but matched query words bold in the
@@ -52,7 +52,7 @@ export const HISTORY_SPAN_YEARS = 18;
 
 /** When the catalog/landing content was last meaningfully refreshed. Pinned (not
  *  `new Date()`) so the sitemap's <lastmod> doesn't claim every URL changed on
- *  every deploy — Google learns to distrust always-"now" timestamps. Bump this
+ *  every deploy - Google learns to distrust always-"now" timestamps. Bump this
  *  when the catalog or the underlying data set is refreshed (alongside
  *  CATALOG_VERSION in examples.ts). */
 export const CONTENT_UPDATED = new Date("2026-06-01T00:00:00Z");
@@ -125,7 +125,7 @@ export function isKnownTermSlug(slug: string): boolean {
 export type Tier = 1 | 2 | 3;
 
 /** The indexing tier for a term. Unknown (off-catalog) terms are treated as
- *  Tier 3 — they already render noindex. */
+ *  Tier 3 - they already render noindex. */
 export function termTier(term: string): Tier {
   const s = termToSlug(term);
   if (TIER1_SLUGS.has(s)) return 1;
@@ -166,7 +166,7 @@ export function allComparisonSlugs(): string[] {
 /* ---------- cross-linking helpers ----------------------------------- */
 /* These build the internal link graph between landing pages: same-category
  * siblings, the comparisons a term appears in, and a deterministic sample of
- * other terms. Dense internal linking — not the sitemap — is what gets the
+ * other terms. Dense internal linking - not the sitemap - is what gets the
  * long-tail /trends + /compare pages discovered and ranked. */
 
 /** The catalog group a term belongs to (first match), or undefined for terms

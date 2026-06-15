@@ -3,12 +3,12 @@
  * browser.
  *
  * The server cache (examples-data.ts) holds each term's points as
- * `{ key: epochMs, docCount }` objects — fine on the server, but serializing
+ * `{ key: epochMs, docCount }` objects - fine on the server, but serializing
  * ~64k of them into the homepage's RSC flight payload ballooned the HTML past
  * 8 MB (the property names `"key"`/`"docCount"` and 13-digit timestamps, all
  * string-escaped, dominate the bytes).
  *
- * Nothing on the client needs the exact epoch — every consumer (the MiniTrend
+ * Nothing on the client needs the exact epoch - every consumer (the MiniTrend
  * sparklines, the coolness ranking) immediately collapses `key` to a month slot
  * via `slotOf`. So we transmit a flat `[slot, count, slot, count, …]` array per
  * term (slots are 0–~240, no property names) and rebuild the `{key, docCount}`
@@ -47,7 +47,7 @@ export function encodeExamplesWire(data: {
 
 /** Client-side: rebuild the `{key, docCount}[]` map every consumer expects.
  *  `key` is the slot's canonical month start, which round-trips through `slotOf`
- *  to the same slot — exactly what densify/coolness key off of. */
+ *  to the same slot - exactly what densify/coolness key off of. */
 export function decodeExamplesWire(
   wire: ExamplesWire,
 ): Record<string, MonthCount[]> {

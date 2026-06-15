@@ -300,7 +300,7 @@ process.on("unhandledRejection", (reason) => {
 /**
  * Ingest one month, retrying on transient failures. The heavy Parquet read
  * (`asyncBufferFromUrl` + hyparquet range fetches) has no retry of its own, so a
- * passing HuggingFace 5xx/timeout would otherwise abort the whole month — which
+ * passing HuggingFace 5xx/timeout would otherwise abort the whole month - which
  * for the unattended daily cron means a failed run and stale data. Re-reads the
  * month from scratch on each attempt (503s are rare, so simple beats clever).
  * Returns true on success, false once retries are exhausted.
@@ -357,7 +357,7 @@ async function main() {
     return;
   }
 
-  // Range: best-effort across many months — a month that exhausts its retries is
+  // Range: best-effort across many months - a month that exhausts its retries is
   // logged and skipped so one bad month doesn't abort a long backfill.
   const [y1, m1, y2, m2] = args.map(Number);
   for (let y = y1; y <= y2; y++) {

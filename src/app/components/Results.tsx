@@ -54,7 +54,7 @@ function TimeAgo({
   onPickMonth?: (iso: string) => void;
 }) {
   const label = timeAgo(iso);
-  const title = `${exactWhen(iso)} — click to filter to this month`;
+  const title = `${exactWhen(iso)} - click to filter to this month`;
   if (!onPickMonth) return <span title={exactWhen(iso)}>{label}</span>;
   return (
     <button type="button" className="time-ago" title={title} onClick={() => onPickMonth(iso)}>
@@ -75,7 +75,7 @@ function useThread(commentId: number) {
     { id: number | null; title: string | null } | null
   >(() => threadCache.get(commentId) ?? null);
   useEffect(() => {
-    // Already resolved (initial state seeded it from the cache) — nothing to do.
+    // Already resolved (initial state seeded it from the cache) - nothing to do.
     // Each row has a unique comment id, so the cache can't fill in behind us.
     if (threadCache.has(commentId)) return;
     let alive = true;
@@ -224,7 +224,7 @@ function StoryRow({
             href={`/archived/${d.id}`}
             target="_blank"
             rel="noreferrer noopener"
-            title="Won't open on HN? A story can be flagged, killed, or deleted there after we indexed it — HN then hides it, but it's still mirrored in the HN Search (Algolia) archive."
+            title="Won't open on HN? A story can be flagged, killed, or deleted there after we indexed it - HN then hides it, but it's still mirrored in the HN Search (Algolia) archive."
           >
             archived ›
           </a>
@@ -302,7 +302,7 @@ function CommentRow({
               href={`/archived/${d.id}`}
               target="_blank"
               rel="noreferrer noopener"
-              title="Won't open on HN? A comment can be flagged, killed, or deleted there after we indexed it — HN then hides it, but it's still mirrored in the HN Search (Algolia) archive."
+              title="Won't open on HN? A comment can be flagged, killed, or deleted there after we indexed it - HN then hides it, but it's still mirrored in the HN Search (Algolia) archive."
             >
               archived ›
             </a>

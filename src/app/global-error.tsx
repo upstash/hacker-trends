@@ -2,7 +2,7 @@
 
 /**
  * Last line of defense: this only fires when the ROOT LAYOUT itself throws, so
- * there's no chrome, no globals.css, nothing to lean on — it must ship its own
+ * there's no chrome, no globals.css, nothing to lean on - it must ship its own
  * <html>/<body> and inline every style. Kept deliberately tiny and self-
  * contained. Same HN gallows humor as error.tsx, minus the dependencies.
  */

@@ -112,7 +112,7 @@ export default async function Image({
           ))}
         </div>
         <div style={{ marginTop: 18, fontSize: 24, color: "#828282" }}>
-          2007 — 2026 · Powered by Upstash Redis Search
+          2007 - 2026 · Powered by Upstash Redis Search
         </div>
       </div>
     ),
