@@ -16,16 +16,17 @@
 
 import type { Metadata } from "next";
 import { parseShareState } from "@/lib/share-url";
-import { SITE_NAME, SITE_TAGLINE, SITE_DESCRIPTION } from "@/lib/site";
+import { SITE_NAME, SITE_TAGLINE, SITE_DESCRIPTION, HOME_TITLE } from "@/lib/site";
 import { HackerTrends } from "./HackerTrends";
 
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
-  // Tab title is intentionally just the brand name (title.absolute bypasses the
-  // layout's "%s · Hacker Trends" template). The descriptive, keyword-rich
-  // phrasing search engines and social cards use lives in description/openGraph.
-  title: { absolute: SITE_NAME },
+  // Homepage title carries the "Hacker News" keyword (HOME_TITLE) so the page it
+  // ranks for ("hacker news trends") is reinforced by the title, not just the
+  // exact-match domain. title.absolute bypasses the layout's "%s · Hacker Trends"
+  // template; child routes still use the bare SITE_NAME brand in that template.
+  title: { absolute: HOME_TITLE },
   description: SITE_DESCRIPTION,
   alternates: { canonical: "/" },
   openGraph: {

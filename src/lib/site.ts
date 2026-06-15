@@ -24,12 +24,24 @@ export const SITE_URL = (
 
 export const SITE_NAME = "Hacker Trends";
 
+/** The homepage <title> element (and SERP/browser-tab title). Unlike SITE_NAME
+ *  (the bare brand, used for og:siteName, JSON-LD, and the child-route template),
+ *  this carries the "Hacker News" keyword so the homepage reinforces the query
+ *  it ranks for ("hacker news trends") instead of leaning on the EMD alone.
+ *  Kept focused on that one winnable cluster — NOT diluted toward "hacker news
+ *  search" (a query Algolia owns). ~43 chars, fits the SERP without truncation. */
+export const HOME_TITLE = "Hacker Trends — Topic Trends on Hacker News";
+
 /** The descriptive one-liner used for og:title / social cards (NOT the browser
  *  tab title — that stays the short brand name, per design). */
 export const SITE_TAGLINE = "18 years of Hacker News, charted";
 
+/** Meta description: not a ranking factor, but matched query words bold in the
+ *  snippet, so breadth is free CTR upside. Front-loads "search" + "Hacker News",
+ *  kept to ~156 chars so nothing truncates (the old 192-char version had its
+ *  "Powered by Upstash" tail cut off; that credit lives on-page + in JSON-LD). */
 export const SITE_DESCRIPTION =
-  "Overlay any topics, tools, or people and see how their traction rose and fell across 18 years of Hacker News: live date-histograms over 45M posts and comments. Powered by Upstash Redis Search.";
+  "Search 18 years of Hacker News and chart how any topic, tool, or person trended. Overlay terms to compare their rise and fall across 45M posts and comments.";
 
 /** First indexed month and last, kept in sync with trend-time.ts (2007 → 2026). */
 export const HISTORY_FROM_YEAR = 2007;
