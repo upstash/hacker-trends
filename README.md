@@ -1,15 +1,45 @@
-# Hacker Trends - full-text search across 18 years of Hacker News
+<div align="center">
 
-A search + trends explorer over 45 million Hacker News posts and comments. Search
-any term, see how often it's mentioned per each month, and drill into the
-results: the actual posts and comments behind each spike, who wrote them, and
-how the conversation splits between stories and comments. Live at
-**[hacker-trends-seven.vercel.app](https://hacker-trends-seven.vercel.app)**.
+# 📈 Hacker Trends
 
-This whole UI is a thin shell over a handful of
-[`@upstash/redis`](https://upstash.com/docs/redis/search) search calls. There's
-no separate search cluster: you store plain Redis hashes and define an index
-over them.
+**Search 18 years of Hacker News and watch any term rise and fall over time.**
+
+[![Live Demo](https://img.shields.io/badge/Live_Demo-FF6600?style=for-the-badge&logo=ycombinator&logoColor=white)](https://hacker-trends-seven.vercel.app)
+[![Powered by Upstash Redis Search](https://img.shields.io/badge/Powered_by-Upstash_Redis_Search-00E9A3?style=for-the-badge&logo=upstash&logoColor=black)](https://upstash.com/docs/redis/features/search)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)](LICENSE)
+
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fupstash%2Fhacker-trends&env=UPSTASH_REDIS_REST_URL,UPSTASH_REDIS_REST_TOKEN&envDescription=Upstash%20Redis%20REST%20credentials&envLink=https%3A%2F%2Fupstash.com%2Fdocs%2Fredis%2Ffeatures%2Frestapi&project-name=hacker-trends&repository-name=hacker-trends)
+
+<!--
+  The video below points at the file committed in this repo (.github/assets/demo.mp4).
+  GitHub renders <video> tags inline. If for some reason it doesn't play, open this
+  README in GitHub's web editor, drag-drop the file into it to get a
+  https://github.com/user-attachments/assets/... URL, and replace the src below.
+-->
+<video src="https://github.com/upstash/hacker-trends/raw/main/.github/assets/demo.mp4" controls muted loop></video>
+
+[**▶ Watch the demo**](https://github.com/upstash/hacker-trends/raw/main/.github/assets/demo.mp4) · [**Try it live**](https://hacker-trends-seven.vercel.app)
+
+</div>
+
+---
+
+Type a word and you get two things at once: a month-by-month trend line of how
+often Hacker News talked about it, and the real posts and comments behind every
+spike. Search one term, or stack several on the same chart to see which one the
+internet actually cared about.
+
+The whole thing is a thin UI over **[Upstash Redis Search](https://upstash.com/docs/redis/features/search)**.
+There's no separate search engine to run — you store plain Redis hashes and
+define one index over them, and every search and every trend line is a single
+`@upstash/redis` call.
+
+## What you can do
+
+- 🔎 **Search** ~45M Hacker News posts and comments, full-text, in milliseconds.
+- 📈 **See the trend** — mentions per month for any term, so you know exactly when it took off.
+- 🆚 **Compare** several terms on one chart and watch them rise and fall against each other.
+- 🧵 **Drill in** to the actual stories and comments behind each spike — who wrote them, and how the conversation splits between posts and replies.
 
 ## How it works
 
@@ -17,8 +47,8 @@ over them.
 from HuggingFace and `HSET`s each item as a plain `hn:<id>` hash in Upstash
 Redis.
 
-**2. Index.** Before loading, `scripts/ingest.ts` also defines one search index
-over those hashes:
+**2. Index.** Before loading, the same script defines one search index over
+those hashes:
 
 ```ts
 await redis.search.createIndex({
@@ -39,7 +69,7 @@ await redis.search.createIndex({
 
 **3. Query.** Every search the UI runs is one `hn.query({ filter, ... })`, and
 every trend line is one `hn.aggregate({ filter, aggregations })`. Both are built
-from the same opts in `src/lib/hn-query.ts`.
+from the same options in `src/lib/hn-query.ts`.
 
 ```ts
 const hn = redis.search.index({ name: "hn", schema });
@@ -64,21 +94,34 @@ const { aggregations } = await hn.aggregate({
 });
 ```
 
-## Getting started
+## Run it locally
 
-Add your Upstash Redis REST creds (`UPSTASH_REDIS_REST_URL`,
-`UPSTASH_REDIS_REST_TOKEN`) to `.env`, then:
+Add your Upstash Redis REST credentials to `.env.local`:
 
 ```bash
-bun i
+UPSTASH_REDIS_REST_URL="..."
+UPSTASH_REDIS_REST_TOKEN="..."
+```
 
+Then install, load some data, and start the dev server:
+
+```bash
+bun install
+
+# ingest one quarter to play with (creates the index on first run)
 bun scripts/ingest.ts 2026 Q1
 
 bun dev
 ```
 
-## Stack
+Open [localhost:3000](http://localhost:3000) and start searching.
 
-- **[Upstash Redis Search](https://upstash.com/docs/redis/search)** via `@upstash/redis`
-- Hacker News data from monthly Parquet dumps on HuggingFace
-- Next.js (App Router) + React on Vercel
+## Tech stack
+
+- **[Upstash Redis Search](https://upstash.com/docs/redis/features/search)** via [`@upstash/redis`](https://github.com/upstash/redis-js) — the entire search + analytics backend.
+- **[Next.js](https://nextjs.org)** (App Router) + React, deployed on **[Vercel](https://vercel.com)**.
+- Hacker News data from the monthly Parquet dumps on HuggingFace.
+
+## License
+
+[MIT](LICENSE) © Upstash
