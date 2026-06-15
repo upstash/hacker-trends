@@ -1,0 +1,79 @@
+# Daily re-ingest of Hacker News data into Upstash Redis.
+#
+# Why a GitHub Action and not a Vercel cron: the ingest decodes a multi-hundred-MB
+# monthly Parquet file and pipelines hundreds of thousands of HSETs — that blows
+# past Vercel serverless time/memory limits, and it needs a *writable* Upstash
+# token, which we deliberately keep OUT of the deployed app (the deploy uses a
+# read-only token). A plain runner with a full Bun runtime is the right home.
+#
+# The upstream dataset (HuggingFace open-index/hacker-news) is effectively live:
+# new items land every ~5 min, and at 00:00 UTC the whole current month is
+# rewritten as one authoritative Parquet. We run at 00:30 UTC so that rewrite has
+# settled, then re-ingest the current month. HSET is idempotent (it overwrites the
+# hn:<id> hash in place), so re-ingesting a month just refreshes it — no dedup.
+#
+# Secrets required (Settings → Secrets and variables → Actions):
+#   UPSTASH_REDIS_REST_URL    — same URL as the deploy
+#   UPSTASH_REDIS_REST_TOKEN  — a WRITABLE token (NOT the deploy's read-only one)
+
+name: Ingest HN data
+
+on:
+  schedule:
+    - cron: "30 0 * * *" # daily, 00:30 UTC
+  workflow_dispatch: # manual run from the Actions tab / `gh workflow run`
+    inputs:
+      year:
+        description: "Year to ingest (default: current UTC year)"
+        required: false
+      month:
+        description: "Month to ingest, 1-12 (default: current UTC month)"
+        required: false
+
+# Never let two ingests overlap (a slow run + the next day's cron).
+concurrency:
+  group: ingest
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+      UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install --frozen-lockfile
+
+      - name: Refresh current month (or the month given on a manual run)
+        run: |
+          set -euo pipefail
+          YEAR="${{ inputs.year }}"
+          MONTH="${{ inputs.month }}"
+          [ -z "$YEAR" ]  && YEAR="$(date -u +%Y)"
+          [ -z "$MONTH" ] && MONTH="$(date -u +%m)"
+          echo "Ingesting $YEAR-$MONTH"
+          bun scripts/ingest.ts "$YEAR" "$MONTH"
+
+      - name: Finalize the previous month at the month boundary
+        # On the 1st/2nd, last month just got its final authoritative rewrite at
+        # 00:00 UTC; re-ingest it once so its last day isn't permanently missed.
+        # Skipped on manual runs (you already picked a month above).
+        if: ${{ github.event_name == 'schedule' }}
+        run: |
+          set -euo pipefail
+          DAY="$(date -u +%d)"
+          if [ "$DAY" = "01" ] || [ "$DAY" = "02" ]; then
+            PY="$(date -u -d "$(date -u +%Y-%m-01) -1 day" +%Y)"
+            PM="$(date -u -d "$(date -u +%Y-%m-01) -1 day" +%m)"
+            echo "Month boundary: finalizing $PY-$PM"
+            bun scripts/ingest.ts "$PY" "$PM"
+          else
+            echo "Not a month boundary (day $DAY); nothing to finalize."
+          fi

@@ -50,6 +50,10 @@ const FAQ: { q: string; a: string }[] = [
     a: `The index covers Hacker News from ${HISTORY_FROM_YEAR} through ${HISTORY_TO_YEAR} — about 18 years of the front page and its comment threads.`,
   },
   {
+    q: "How often is the data refreshed?",
+    a: "The index is re-ingested daily from the public HuggingFace Hacker News Parquet dump, which itself tracks the site in near-real-time, so the data stays current to within about a day. The 'updated' badge in the header shows exactly how recent the newest indexed item is.",
+  },
+  {
     q: "How is a term's popularity measured?",
     a: "Each point on the line is the number of Hacker News posts and comments in that month whose title or body mentions the term — an honest, exact mention count, not a fuzzy or weighted score. The chart is a live date-histogram computed at query time.",
   },

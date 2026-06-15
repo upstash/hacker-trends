@@ -18,6 +18,7 @@ import { TrendChart, type Range, type Series } from "./components/TrendChart";
 import { Results } from "./components/Results";
 import { CodePanel } from "./components/CodePanel";
 import { MiniTrend } from "./components/MiniTrend";
+import { DataFreshness } from "./components/DataFreshness";
 import { UpstashMark } from "./components/code-bits";
 
 // First series leads with HN orange; the rest are picked for contrast on the
@@ -523,7 +524,8 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
           | see how any topic, tool, or person trended across 18 years of
           Hacker News
         </span>
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-2">
+          <DataFreshness />
           <ShareButton />
         </div>
       </div>
