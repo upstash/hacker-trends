@@ -10,15 +10,8 @@
 
 [![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fupstash%2Fhacker-trends&env=UPSTASH_REDIS_REST_URL,UPSTASH_REDIS_REST_TOKEN&envDescription=Upstash%20Redis%20REST%20credentials&envLink=https%3A%2F%2Fupstash.com%2Fdocs%2Fredis%2Ffeatures%2Frestapi&project-name=hacker-trends&repository-name=hacker-trends)
 
-<!--
-  The video below points at the file committed in this repo (.github/assets/demo.mp4).
-  GitHub renders <video> tags inline. If for some reason it doesn't play, open this
-  README in GitHub's web editor, drag-drop the file into it to get a
-  https://github.com/user-attachments/assets/... URL, and replace the src below.
--->
-<video src="https://github.com/upstash/hacker-trends/raw/main/.github/assets/demo.mp4" controls muted loop></video>
 
-[**▶ Watch the demo**](https://github.com/upstash/hacker-trends/raw/main/.github/assets/demo.mp4) · [**Try it live**](https://hacker-trends-seven.vercel.app)
+<video src="https://github.com/user-attachments/assets/21146fa4-1547-4bfb-8a1f-df0b841455ef" controls muted loop></video>
 
 </div>
 
