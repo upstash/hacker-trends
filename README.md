@@ -4,11 +4,9 @@
 
 **Search 18 years of Hacker News and watch any term rise and fall over time.**
 
-[![Live Demo](https://img.shields.io/badge/Live_Demo-FF6600?style=for-the-badge&logo=ycombinator&logoColor=white)](https://hacker-trends-seven.vercel.app)
-[![Powered by Upstash Redis Search](https://img.shields.io/badge/Powered_by-Upstash_Redis_Search-00E9A3?style=for-the-badge&logo=upstash&logoColor=black)](https://upstash.com/docs/redis/features/search)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)](LICENSE)
-
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fupstash%2Fhacker-trends&env=UPSTASH_REDIS_REST_URL,UPSTASH_REDIS_REST_TOKEN&envDescription=Upstash%20Redis%20REST%20credentials&envLink=https%3A%2F%2Fupstash.com%2Fdocs%2Fredis%2Ffeatures%2Frestapi&project-name=hacker-trends&repository-name=hacker-trends)
+[![Live Demo](https://img.shields.io/badge/Live_Demo-FF6600?style=for-the-badge&logo=ycombinator&logoColor=white)](https://hackernewstrends.com)
+[![Powered by Upstash Redis Search](https://img.shields.io/badge/Powered_by-Upstash_Redis_Search-DC2626?style=for-the-badge&logo=upstash&logoColor=white)](https://upstash.com/docs/redis/features/search)
+[![Deploy on Vercel](https://img.shields.io/badge/Deploy_on-Vercel-000000?style=for-the-badge&logo=vercel&logoColor=white)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fupstash%2Fhacker-trends&env=UPSTASH_REDIS_REST_URL,UPSTASH_REDIS_REST_TOKEN&envDescription=Upstash%20Redis%20REST%20credentials&envLink=https%3A%2F%2Fupstash.com%2Fdocs%2Fredis%2Ffeatures%2Frestapi&project-name=hacker-trends&repository-name=hacker-trends)
 
 
 <video src="https://github.com/user-attachments/assets/21146fa4-1547-4bfb-8a1f-df0b841455ef" controls muted loop></video>
