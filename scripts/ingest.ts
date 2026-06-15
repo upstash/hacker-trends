@@ -297,6 +297,38 @@ process.on("unhandledRejection", (reason) => {
   console.error("unhandledRejection (ignoring):", String(reason).slice(0, 200));
 });
 
+/**
+ * Ingest one month, retrying on transient failures. The heavy Parquet read
+ * (`asyncBufferFromUrl` + hyparquet range fetches) has no retry of its own, so a
+ * passing HuggingFace 5xx/timeout would otherwise abort the whole month — which
+ * for the unattended daily cron means a failed run and stale data. Re-reads the
+ * month from scratch on each attempt (503s are rare, so simple beats clever).
+ * Returns true on success, false once retries are exhausted.
+ */
+async function ingestMonthWithRetry(
+  year: string,
+  mm: string,
+  maxTries = 4,
+): Promise<boolean> {
+  for (let tries = 1; tries <= maxTries; tries++) {
+    try {
+      await ingestMonth(year, mm);
+      return true;
+    } catch (e) {
+      console.error(
+        `month ${year}-${mm} attempt ${tries}/${maxTries} failed:`,
+        (e as Error).message.slice(0, 200),
+      );
+      if (tries >= maxTries) {
+        console.error(`giving up on ${year}-${mm}`);
+        return false;
+      }
+      await new Promise((r) => setTimeout(r, 5000 * tries));
+    }
+  }
+  return false;
+}
+
 async function main() {
   let args = process.argv.slice(2);
 
@@ -317,35 +349,22 @@ async function main() {
   // Make sure the search index exists before we start writing hashes.
   await ensureIndex();
 
+  // Single month (the daily cron path): exit non-zero if it ultimately fails so
+  // CI surfaces a persistent outage instead of silently leaving the data stale.
   if (args.length === 2) {
-    await ingestMonth(args[0], args[1].padStart(2, "0"));
+    const ok = await ingestMonthWithRetry(args[0], args[1].padStart(2, "0"));
+    if (!ok) process.exit(1);
     return;
   }
 
+  // Range: best-effort across many months — a month that exhausts its retries is
+  // logged and skipped so one bad month doesn't abort a long backfill.
   const [y1, m1, y2, m2] = args.map(Number);
   for (let y = y1; y <= y2; y++) {
     const fromM = y === y1 ? m1 : 1;
     const toM = y === y2 ? m2 : 12;
     for (let m = fromM; m <= toM; m++) {
-      const mm = String(m).padStart(2, "0");
-      let tries = 0;
-      while (tries < 3) {
-        try {
-          await ingestMonth(String(y), mm);
-          break;
-        } catch (e) {
-          tries++;
-          console.error(
-            `month ${y}-${mm} attempt ${tries} failed:`,
-            (e as Error).message.slice(0, 200)
-          );
-          if (tries >= 3) {
-            console.error(`giving up on ${y}-${mm}, moving on`);
-            break;
-          }
-          await new Promise((r) => setTimeout(r, 5000 * tries));
-        }
-      }
+      await ingestMonthWithRetry(String(y), String(m).padStart(2, "0"));
     }
   }
 }
