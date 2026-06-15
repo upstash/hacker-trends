@@ -9,7 +9,7 @@
 [![Deploy on Vercel](https://img.shields.io/badge/Deploy_on-Vercel-000000?style=for-the-badge&logo=vercel&logoColor=white)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fupstash%2Fhacker-trends&env=UPSTASH_REDIS_REST_URL,UPSTASH_REDIS_REST_TOKEN&envDescription=Upstash%20Redis%20REST%20credentials&envLink=https%3A%2F%2Fupstash.com%2Fdocs%2Fredis%2Ffeatures%2Frestapi&project-name=hacker-trends&repository-name=hacker-trends)
 
 
-<video src="https://github.com/user-attachments/assets/21146fa4-1547-4bfb-8a1f-df0b841455ef" controls muted loop></video>
+<img src=".github/assets/demo.webp" width="900" alt="Searching a term on Hacker Trends and watching its mention count trend across 18 years of Hacker News" />
 
 </div>
 
