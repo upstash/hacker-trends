@@ -51,7 +51,7 @@ const FAQ: { q: string; a: string }[] = [
   },
   {
     q: "How often is the data refreshed?",
-    a: "The index is re-ingested daily from the public HuggingFace Hacker News Parquet dump, which itself tracks the site in near-real-time, so the data stays current to within about a day. The 'updated' badge in the header shows exactly how recent the newest indexed item is.",
+    a: "The index is re-ingested daily from the public HuggingFace Hacker News Parquet dump, which itself tracks the site in near-real-time, so the data stays current to within about a day. The 'synced' badge in the header shows exactly how recent the newest indexed item is.",
   },
   {
     q: "How is a term's popularity measured?",

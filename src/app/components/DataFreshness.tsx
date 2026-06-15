@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { searchPosts } from "@/lib/hn-search";
 
 /**
- * A tiny "updated · 6h ago" badge for the header.
+ * A tiny "synced · 6h ago" badge for the header.
  *
  * It measures how fresh the *data* is, not when we wrote it to Upstash: the
  * timestamp shown is the single most-recent Hacker News item in the index — i.e.
@@ -61,7 +61,7 @@ export function DataFreshness() {
         className="inline-block rounded-full"
         style={{ width: 6, height: 6, background: dot }}
       />
-      updated · {ago(newest)}
+      synced · {ago(newest)}
     </span>
   );
 }
