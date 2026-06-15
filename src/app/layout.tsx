@@ -118,6 +118,12 @@ export default function RootLayout({
             gtag('config', 'G-RNWSKXGPQD');
           `}
         </Script>
+        {/* Ahrefs Web Analytics */}
+        <Script
+          src="https://analytics.ahrefs.com/analytics.js"
+          data-key="FXA+NiNrkB9sI55LE+lvGw"
+          strategy="afterInteractive"
+        />
         <WebVitals />
         <JsonLd data={siteJsonLd} />
         {children}
