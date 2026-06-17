@@ -25,12 +25,15 @@ export const SITE_URL = (
 export const SITE_NAME = "Hacker Trends";
 
 /** The homepage <title> element (and SERP/browser-tab title). Unlike SITE_NAME
- *  (the bare brand, used for og:siteName, JSON-LD, and the child-route template),
- *  this carries the "Hacker News" keyword so the homepage reinforces the query
- *  it ranks for ("hacker news trends") instead of leaning on the EMD alone.
- *  Kept focused on that one winnable cluster - NOT diluted toward "hacker news
- *  search" (a query Algolia owns). ~43 chars, fits the SERP without truncation. */
-export const HOME_TITLE = "Hacker Trends - Topic Trends on Hacker News";
+ *  (the bare brand "Hacker Trends", used for og:siteName, JSON-LD, and the
+ *  child-route template), this LEADS with the exact phrase "Hacker News Trends"
+ *  so it matches the EMD (hackernewstrends.com) and that brand-y query head-on,
+ *  and folds in "Search" to also reach "hacker news search" - the only nearby
+ *  query with real volume (~500/mo US, KD 36 per Ahrefs; the bare "* trends"
+ *  variants measure 0 volume and aren't worth optimizing for alone). ~55 chars,
+ *  no SERP truncation. Treat as FINAL: re-editing the homepage <title> resets
+ *  Google's relevance read and prolongs ranking churn on this DR-0 domain. */
+export const HOME_TITLE = "Hacker News Trends - Search & Chart Any Topic Over Time";
 
 /** The descriptive one-liner used for og:title / social cards (NOT the browser
  *  tab title - that stays the short brand name, per design). */
