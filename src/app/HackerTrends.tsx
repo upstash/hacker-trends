@@ -525,6 +525,13 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
           Hacker News
         </span>
         <div className="ml-auto flex items-center gap-2">
+          <Link
+            href="/who-is-hiring"
+            className="text-[11px] font-semibold whitespace-nowrap hover:underline"
+            title="Trends in the monthly Hacker News “Who is hiring?” threads"
+          >
+            Who&apos;s hiring? →
+          </Link>
           <DataFreshness />
           <ShareButton />
         </div>
