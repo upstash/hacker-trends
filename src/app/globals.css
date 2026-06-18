@@ -547,9 +547,7 @@ input.hn-input:focus { border-color: var(--hn-orange); }
   gap: 0;
   transform: translateZ(0);
 }
-/* The entrance wrapper: carries the column height + the staggered grow-up
- * keyframe. Kept separate from the magnification target so the two transforms
- * never collide. */
+/* Carries the column height. */
 .jobs-bar-grow {
   width: 100%;
 }
@@ -613,29 +611,6 @@ input.hn-input:focus { border-color: var(--hn-orange); }
     inset 0 0 0 1.5px rgba(255, 255, 255, 0.95),
     0 0 0 1px rgba(0, 0, 0, 0.28),
     0 1px 6px rgba(0, 0, 0, 0.22);
-}
-
-/* Entrance: each column SPRINGS up and rises into place with a tasteful ~6%
- * overshoot that settles, instead of a plain grow. transform-origin:bottom (set
- * inline) pins the baseline; GPU-only (transform + opacity). Keyed by a remount
- * (the bar row's `key` changes with data/window/normalization) so it reliably
- * REPLAYS every time, with a front-loaded sqrt "wave" stagger (T07). */
-@keyframes jobsBarGrow {
-  0% {
-    transform: translateY(14%) scaleY(0.02);
-    opacity: 0;
-  }
-  60% {
-    opacity: 1;
-  }
-  72% {
-    /* overshoot: a hair past full height */
-    transform: translateY(0) scaleY(1.06);
-  }
-  100% {
-    transform: translateY(0) scaleY(1);
-    opacity: 1;
-  }
 }
 
 /* --- Who Is Hiring? gallery mini cards (T12) ---------------------------- */

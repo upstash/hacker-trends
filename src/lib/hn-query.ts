@@ -111,9 +111,15 @@ export type FilterOpts = { phraseBoost?: boolean; scope?: Scope };
 /** The "Who is hiring?" subcorpus arm: match only comments whose immediate
  *  parent is one of the monthly hiring threads (each such comment is a job
  *  posting). It's an `$or` over ~180 parent ids; ANDed with the term arms it
- *  restricts the trend/search to job postings. Performance is fine: a parent is
- *  a fast numeric equality, and the whole aggregate returns in well under a
- *  second (the response is then CDN-cached by /api/hn). */
+ *  restricts the trend/search to job postings.
+ *
+ *  PERF: this arm is SLOW - `parent` is a non-`.fast()` numeric field, so the
+ *  ~180-id `$or` scans, and a search/aggregate through it runs ~4s (measured) vs
+ *  ~250ms for the same query on the dedicated `hnjobs` postings index. It is the
+ *  LEGACY fallback only: every who-is-hiring path picks its index via
+ *  `drillIndex()`, which targets `hnjobs` (no scope arm) by default and falls
+ *  back to this arm on the shared `hn` index only when `hnjobs` is explicitly
+ *  disabled (NEXT_PUBLIC_JOBS_INDEX_READY=0). See src/lib/jobs-index.ts. */
 function jobScopeArm(): Record<string, unknown> {
   return { $or: JOB_THREAD_IDS.map((id) => ({ parent: id })) };
 }

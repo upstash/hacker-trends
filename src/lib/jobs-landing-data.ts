@@ -75,7 +75,10 @@ async function partBuckets(part: string): Promise<MonthCount[]> {
   }
   if (!redis) return [];
   try {
-    const agg = await runAggregate(redis, { q: part, scope: "jobs" });
+    // Same gate the live hooks use: the fast dedicated `hnjobs` index when ready
+    // (no scope arm), else the shared `hn` index narrowed by `scope=jobs`.
+    const { index, scope } = drillIndex();
+    const agg = await runAggregate(redis, { q: part, scope, index });
     return agg.buckets.map((b) => ({ key: b.key, docCount: b.docCount }));
   } catch {
     return [];
@@ -432,7 +435,8 @@ export async function remoteShare(term: string): Promise<number | null> {
     (async () => {
       if (!redis) return [] as MonthCount[];
       try {
-        const agg = await runAggregate(redis, { q: `${part} remote`, scope: "jobs" });
+        const { index, scope } = drillIndex();
+        const agg = await runAggregate(redis, { q: `${part} remote`, scope, index });
         return agg.buckets.map((b) => ({ key: b.key, docCount: b.docCount }));
       } catch {
         return [] as MonthCount[];

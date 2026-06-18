@@ -119,13 +119,6 @@ function JobsStackedBarsInner({
     [columns],
   );
   const anyData = useMemo(() => columns.some((c) => c.total > 0), [columns]);
-  // The entrance animation (T07) keys off this so it replays on every change.
-  const animKey =
-    windowKey +
-    "|" +
-    (normalized ? "r" : "a") +
-    "|" +
-    series.map((s) => `${s.label}:${s.total}`).join(",");
 
   const hitFor = (ci: number, si: number): SegmentHit => {
     const c = columns[ci];
@@ -211,10 +204,7 @@ function JobsStackedBarsInner({
             no job-post mentions in this window
           </div>
         ) : (
-          <div
-            key={animKey}
-            className="jobs-bars flex h-full items-end"
-          >
+          <div className="jobs-bars flex h-full items-end">
             {columns.map((col, ci) => {
               const shares = columnShares(col);
               // Outer column height as a PERCENT of the box, so it tracks the
@@ -227,30 +217,17 @@ function JobsStackedBarsInner({
                   ? 100
                   : 0
                 : (col.total / maxTotal) * 100;
-              // Wave stagger: front-loaded via sqrt so the leading edge moves
-              // fast and the tail eases in (reads as a wave, not a metronome).
-              // Capped total ramp keeps the ~180-bar "all" window snappy: the
-              // last bar starts no later than ~260ms.
-              const delay =
-                Math.sqrt(ci / Math.max(1, columns.length)) * 260;
               return (
                 <div
                   key={col.idx}
                   className="flex h-full flex-col justify-end"
                   style={{ flexBasis: 0, flexGrow: 1, minWidth: 0 }}
                 >
-                  {/* Outer wrapper carries the column height + the staggered
-                      springy entrance keyframe (T07): each column rises into
-                      place with a ~6% overshoot that settles. The inner `fill`
-                      holds the stacked segments. The overshoot is baked into the
-                      keyframe stops, so a plain decelerate curve is correct. */}
+                  {/* Outer wrapper carries the column height; the inner `fill`
+                      holds the stacked segments. */}
                   <div
                     className="jobs-bar-grow"
-                    style={{
-                      height: `${colPct}%`,
-                      transformOrigin: "bottom",
-                      animation: `jobsBarGrow 420ms cubic-bezier(.22,.61,.36,1) ${delay}ms both`,
-                    }}
+                    style={{ height: `${colPct}%` }}
                   >
                     <div className="jobs-bar-fill flex flex-col-reverse">
                       {series.map((s, si) => {
