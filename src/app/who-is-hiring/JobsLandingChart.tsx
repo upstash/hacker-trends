@@ -28,10 +28,16 @@ import { useJobComments } from "./useJobComments";
 export function JobsLandingChart({ initialTerms }: { initialTerms: string[] }) {
   const [terms, setTerms] = useState<string[]>(initialTerms);
   const [windowKey, setWindowKey] = useState<WindowKey>("all");
-  const [normalized, setNormalized] = useState(true);
+  // Landing pages open on raw COUNTS, not share-of-voice: a single-skill page is
+  // always a flat 100% band in share mode, and even a 2-way comparison reads more
+  // honestly as counts here (the user can still flip to share% when there are 2+
+  // terms). A single term hides the toggle entirely (`hideShareToggle` below).
+  const isSingle = terms.length <= 1;
+  const [normalized, setNormalized] = useState(false);
 
   const { series, loading } = useJobSeries(terms);
-  const { state: commentsState, load: loadComments } = useJobComments();
+  const { state: commentsState, load: loadComments, loadMore: loadMoreComments } =
+    useJobComments();
 
   // Guard the one-time prefetch of the seed comparison's drill-down, and never
   // yank a posting the user is actively reading.
@@ -93,8 +99,9 @@ export function JobsLandingChart({ initialTerms }: { initialTerms: string[] }) {
           series={series}
           windowKey={windowKey}
           onWindow={setWindowKey}
-          normalized={normalized}
+          normalized={isSingle ? false : normalized}
           onToggleNormalized={setNormalized}
+          hideShareToggle={isSingle}
           onHover={drill}
           onSelect={drill}
           loading={loading}
@@ -103,7 +110,7 @@ export function JobsLandingChart({ initialTerms }: { initialTerms: string[] }) {
 
       {/* Reserve the drill-down height so hydration causes no layout shift. */}
       <div className="pt-4 min-h-[240px]">
-        <JobsComments state={commentsState} />
+        <JobsComments state={commentsState} onLoadMore={loadMoreComments} />
       </div>
     </div>
   );

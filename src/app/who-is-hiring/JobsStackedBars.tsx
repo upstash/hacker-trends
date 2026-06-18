@@ -73,6 +73,10 @@ type Props = {
   onWindow: (w: WindowKey) => void;
   normalized: boolean;
   onToggleNormalized: (v: boolean) => void;
+  /** Hide the share%/count toggle entirely. Used on a SINGLE-term landing page
+   *  where "share of voice" is always a flat 100% band (meaningless with one
+   *  series), so the chart shows raw counts only and drops the toggle. */
+  hideShareToggle?: boolean;
   onHover?: (hit: SegmentHit) => void;
   onSelect?: (hit: SegmentHit) => void;
   /** Optionally drive the latched/pinned segment from the parent (it already
@@ -90,6 +94,7 @@ function JobsStackedBarsInner({
   onWindow,
   normalized,
   onToggleNormalized,
+  hideShareToggle,
   onHover,
   onSelect,
   selected,
@@ -154,22 +159,28 @@ function JobsStackedBarsInner({
       {/* toolbar: share%/count toggle + window presets. Wraps on narrow screens
           so nothing overflows the chart frame on a phone. */}
       <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-3 pt-2 pb-1">
-        <div className="hn-tabs flex items-center gap-1">
-          <button
-            className={normalized ? "active" : ""}
-            title="each month is 100% - segments are each term's share"
-            onClick={() => onToggleNormalized(true)}
-          >
-            share %
-          </button>
-          <button
-            className={!normalized ? "active" : ""}
-            title="bar height is the raw number of postings"
-            onClick={() => onToggleNormalized(false)}
-          >
-            count
-          </button>
-        </div>
+        {hideShareToggle ? (
+          // Single-term page: no share%/count toggle. Keep an empty cell so the
+          // window presets stay right-aligned under `justify-between`.
+          <div />
+        ) : (
+          <div className="hn-tabs flex items-center gap-1">
+            <button
+              className={normalized ? "active" : ""}
+              title="each month is 100% - segments are each term's share"
+              onClick={() => onToggleNormalized(true)}
+            >
+              share %
+            </button>
+            <button
+              className={!normalized ? "active" : ""}
+              title="bar height is the raw number of postings"
+              onClick={() => onToggleNormalized(false)}
+            >
+              count
+            </button>
+          </div>
+        )}
         <div className="flex items-center gap-3">
           <div className="hn-tabs flex items-center gap-1">
             {WINDOWS.map((w) => (

@@ -99,7 +99,7 @@ export function statsFor(buckets: MonthCount[]): TermStats {
 export function trendSummary(term: string, stats: TermStats): string {
   const display = term.charAt(0).toUpperCase() + term.slice(1);
   if (stats.total === 0) {
-    return `“${display}” has no recorded Hacker News mentions in this index yet.`;
+    return `${display} has no recorded Hacker News mentions in this index yet.`;
   }
   const span =
     stats.firstYear && stats.lastYear
@@ -110,7 +110,7 @@ export function trendSummary(term: string, stats: TermStats): string {
   const peak = stats.peakLabel
     ? `, peaking in ${stats.peakLabel} with ${stats.peakCount.toLocaleString()} that month`
     : "";
-  return `“${display}” was mentioned ${stats.total.toLocaleString()} times on Hacker News${span}${peak}.`;
+  return `${display} was mentioned ${stats.total.toLocaleString()} times on Hacker News${span}${peak}.`;
 }
 
 /** Just the histogram + derived stats for a term (no story fetch). Used by the

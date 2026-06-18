@@ -63,16 +63,29 @@ export function JobsPostingSample({
   postings,
   term,
   heading,
+  subheading,
+  showReplies,
 }: {
   postings: JobPosting[];
   /** the matched term (for highlighting); an OR-group is split on `|`. */
   term: string;
   heading: string;
+  /** optional one-line subheading under the heading (e.g. "the ones that drew
+   *  the most discussion"). */
+  subheading?: string;
+  /** show each posting's direct-reply count when present (the "most discussion"
+   *  section uses this to make the ranking legible). */
+  showReplies?: boolean;
 }) {
   if (postings.length === 0) return null;
   return (
     <div className="px-3 pt-6">
       <h2 className="text-[14px] font-bold">{heading}</h2>
+      {subheading && (
+        <p className="text-[12px] text-[color:var(--hn-subtle)] mt-1 max-w-[760px] leading-relaxed">
+          {subheading}
+        </p>
+      )}
       <ol className="mt-2 flex flex-col gap-3">
         {postings.map((p) => {
           const hnUrl = `https://news.ycombinator.com/item?id=${p.id}`;
@@ -89,6 +102,12 @@ export function JobsPostingSample({
                   {p.by}
                 </a>
                 {when && <span> · hiring in {when}</span>}
+                {showReplies && p.replies != null && p.replies > 0 && (
+                  <span className="tabular-nums">
+                    {" · "}
+                    {p.replies} {p.replies === 1 ? "reply" : "replies"}
+                  </span>
+                )}
                 {p.parent != null && (
                   <>
                     {" · "}

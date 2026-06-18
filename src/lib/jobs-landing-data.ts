@@ -30,7 +30,7 @@
  */
 
 import { hnRedis, runAggregate, runSearch } from "@/lib/hn-index";
-import { type HnDoc } from "@/lib/hn-query";
+import { type HnDoc, type SortMode } from "@/lib/hn-query";
 import { getJobsGalleryData } from "@/lib/jobs-gallery-data";
 import { drillIndex } from "@/lib/jobs-index";
 import {
@@ -40,6 +40,7 @@ import {
   colorAt,
   monthKey,
   monthIndex,
+  fromMonthIndex,
   type RawBucket,
   type SeriesData,
 } from "@/lib/jobs-trends";
@@ -128,6 +129,12 @@ const MONTH_ABBR = [
   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
 
+/** Full month names for the human "<Month> <Year>" section heading. */
+const MONTH_FULL = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+
 /** Latest month-index across all series (the freshest bar). Falls back to the
  *  manifest's newest month when every series is empty. */
 function latestIdx(series: SeriesData[]): number {
@@ -207,6 +214,10 @@ export type JobPosting = {
   month: string | null;
   /** a clean, HTML-stripped excerpt of the posting body. */
   snippet: string;
+  /** direct-reply (discussion) count, when the dedicated `hnjobs` index supplies
+   *  it. Drives the "most interactions" ordering of the popular sample; absent on
+   *  the shared `hn` index (where the comment count is always 0). */
+  replies?: number;
 };
 
 /** thread-id -> "YYYY-MM", so a posting can be labelled by its hiring month. */
@@ -245,22 +256,26 @@ function excerpt(raw: string, max = 280): string {
 /** Turn a raw `HnDoc` posting into the trimmed wire shape. */
 function toPosting(d: HnDoc): JobPosting {
   const parent = d.parent ?? null;
+  // `replies` on the dedicated `hnjobs` index; `ndesc` on the shared `hn` index
+  // (always 0 for comments). Only carry a positive count.
+  const replies = d.replies ?? d.ndesc ?? 0;
   return {
     id: d.id,
     by: d.by,
     parent,
     month: parent != null ? (THREAD_MONTH.get(parent) ?? null) : null,
     snippet: excerpt(d.text ?? ""),
+    ...(replies > 0 ? { replies } : {}),
   };
 }
 
-/** Over-fetch the term's postings, scope=jobs (or `hnjobs` when ready), ranked
- *  by relevance (which on the shared index folds in the discussion signal). A
- *  `from` floor biases toward recent postings; omit it for the all-time pass. */
+/** Over-fetch a term's postings, scope=jobs (or `hnjobs` when ready). `sort`
+ *  picks the ordering ("relevance" for a representative sample; "discussed" to
+ *  surface the most-replied-to postings), and `from`/`to` bound the time window
+ *  (e.g. one calendar month, or this year onward). */
 async function fetchPostings(
   part: string,
-  limit: number,
-  from?: string,
+  opts: { limit: number; from?: string; to?: string; sort?: SortMode },
 ): Promise<HnDoc[]> {
   if (!redis) return [];
   const { index, scope } = drillIndex();
@@ -269,17 +284,42 @@ async function fetchPostings(
       q: part,
       scope,
       index,
-      sort: "relevance",
-      limit,
-      from,
+      sort: opts.sort ?? "relevance",
+      limit: opts.limit,
+      from: opts.from,
+      to: opts.to,
     });
   } catch {
     return [];
   }
 }
 
-/** How far back "recent" reaches for the postings sample (the freshest postings
- *  are what a job-seeker wants, and they keep the "recent" heading honest). */
+/** Collect up to `limit` postings from `docs` into `out`, skipping anything
+ *  already taken (by id) or a repeat poster (by handle) - so one company
+ *  spamming the thread can't fill the list with near-identical text. Mutates the
+ *  shared `seenAuthor`/`seenId` sets so successive passes compose, and a later
+ *  section never repeats a posting an earlier one already showed. */
+function collectPostings(
+  docs: HnDoc[],
+  limit: number,
+  out: JobPosting[],
+  seenAuthor: Set<string>,
+  seenId: Set<number>,
+): void {
+  for (const d of docs) {
+    if (out.length >= limit) break;
+    if (seenId.has(d.id)) continue;
+    const p = toPosting(d);
+    if (!p.snippet) continue;
+    const key = p.by.toLowerCase();
+    if (seenAuthor.has(key)) continue;
+    seenAuthor.add(key);
+    seenId.add(d.id);
+    out.push(p);
+  }
+}
+
+/** How far back "recent" reaches for the small per-side comparison samples. */
 const RECENT_FROM = "2024-01-01T00:00:00.000Z";
 
 /**
@@ -298,23 +338,85 @@ export async function samplePostings(
   const out: JobPosting[] = [];
   const seenAuthor = new Set<string>();
   const seenId = new Set<number>();
-  const take = (docs: HnDoc[]) => {
-    for (const d of docs) {
-      if (out.length >= limit) break;
-      if (seenId.has(d.id)) continue;
-      const p = toPosting(d);
-      if (!p.snippet) continue;
-      const key = p.by.toLowerCase();
-      if (seenAuthor.has(key)) continue;
-      seenAuthor.add(key);
-      seenId.add(d.id);
-      out.push(p);
-    }
-  };
   // Recent first, then backfill from all-time if the recent window is thin.
-  take(await fetchPostings(part, limit * 4, RECENT_FROM));
-  if (out.length < limit) take(await fetchPostings(part, limit * 4));
+  collectPostings(
+    await fetchPostings(part, { limit: limit * 4, from: RECENT_FROM }),
+    limit, out, seenAuthor, seenId,
+  );
+  if (out.length < limit) {
+    collectPostings(
+      await fetchPostings(part, { limit: limit * 4 }),
+      limit, out, seenAuthor, seenId,
+    );
+  }
   return out;
+}
+
+/** ISO [from, to) window covering one calendar month (0-based `month`). */
+function monthIsoWindow(year: number, month: number): { from: string; to: string } {
+  return {
+    from: new Date(Date.UTC(year, month, 1)).toISOString(),
+    to: new Date(Date.UTC(year, month + 1, 1)).toISOString(),
+  };
+}
+
+/** The two posting groups a single-skill page shows: the newest month's
+ *  postings, and the most-discussed ones (deduped against the first group). */
+export type JobsTermPostings = {
+  /** postings from the dataset's newest month (the "<Month> <Year>" section). */
+  month: JobPosting[];
+  /** human label of that newest month, e.g. "June 2026". */
+  monthLabel: string;
+  /** the most-discussed postings (most replies first), excluding `month`. */
+  popular: JobPosting[];
+  /** the year `popular` is scoped to, or null when it falls back to all-time. */
+  popularYear: number | null;
+};
+
+/**
+ * Build the two postings groups for a single-skill page:
+ *
+ *   1. `month` - the postings in the dataset's NEWEST month (so the lead section
+ *      is honestly "<this month>'s postings", not a vague "recent" mix that
+ *      reaches back years).
+ *   2. `popular` - the most-DISCUSSED postings (ranked by direct replies), scoped
+ *      to the current year and EXCLUDING anything already in `month`. If the
+ *      year is thin it broadens to all-time (`popularYear` then null).
+ */
+async function termPostings(term: string, latestIdxVal: number): Promise<JobsTermPostings> {
+  const part = parseParts(term)[0] ?? term;
+  const { year: ly, month: lm } = fromMonthIndex(latestIdxVal);
+  const monthLabel = `${MONTH_FULL[lm]} ${ly}`;
+
+  const seenAuthor = new Set<string>();
+  const seenId = new Set<number>();
+
+  // 1) Newest month, most-discussed first so the lead postings are the liveliest.
+  const win = monthIsoWindow(ly, lm);
+  const month: JobPosting[] = [];
+  collectPostings(
+    await fetchPostings(part, { limit: 24, from: win.from, to: win.to, sort: "discussed" }),
+    5, month, seenAuthor, seenId,
+  );
+
+  // 2) Most-discussed this year, excluding the month set. Broaden to all-time if
+  //    the current year is too thin to fill the section.
+  const yearFrom = new Date(Date.UTC(ly, 0, 1)).toISOString();
+  let popularYear: number | null = ly;
+  const popular: JobPosting[] = [];
+  collectPostings(
+    await fetchPostings(part, { limit: 50, from: yearFrom, sort: "discussed" }),
+    5, popular, seenAuthor, seenId,
+  );
+  if (popular.length < 3) {
+    popularYear = null;
+    collectPostings(
+      await fetchPostings(part, { limit: 50, sort: "discussed" }),
+      5, popular, seenAuthor, seenId,
+    );
+  }
+
+  return { month, monthLabel, popular, popularYear };
 }
 
 /* ---------- remote share (cheap extra stat) ------------------------- */
@@ -349,19 +451,22 @@ export type JobsTermLanding = {
   term: string;
   series: SeriesData[];
   stats: JobsTermStats;
-  postings: JobPosting[];
+  /** the newest month's postings + the most-discussed postings (see
+   *  `JobsTermPostings`); replaces the old single "recent" list. */
+  postings: JobsTermPostings;
   /** fraction of postings that also mention remote, or null. */
   remote: number | null;
 };
 
 /** Everything the single-skill page needs, fetched in parallel. */
 export async function getJobsTermLanding(term: string): Promise<JobsTermLanding> {
-  const [series, postings, remote] = await Promise.all([
+  const [series, remote] = await Promise.all([
     buildJobSeries([term]),
-    samplePostings(term, 6),
     remoteShare(term),
   ]);
-  const stats = statsForSeries(series[0], latestIdx(series));
+  const latest = latestIdx(series);
+  const stats = statsForSeries(series[0], latest);
+  const postings = await termPostings(term, latest);
   return { term, series, stats, postings, remote };
 }
 

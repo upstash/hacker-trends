@@ -67,9 +67,17 @@ function cacheKey(
   parts: string[],
   from: string,
   to: string,
+  limit: number,
 ): string {
-  return `${index}|${scope ?? ""}|${[...parts].sort().join("|")}|${from}|${to}`;
+  return `${index}|${scope ?? ""}|${[...parts].sort().join("|")}|${from}|${to}|${limit}`;
 }
+
+/** Initial number of postings a drill-down loads. */
+const PAGE = 12;
+/** How many more the "Load more" button pulls in each press. */
+const PAGE_STEP = 16;
+/** Hard cap so a dense month (e.g. python in a peak month) can't fetch unbounded. */
+const PAGE_MAX = 80;
 
 /** What the panel is currently showing: which series, which month, the docs. */
 export type CommentLoad = {
@@ -87,9 +95,20 @@ export type CommentsState = {
   status: "idle" | "loading" | "done" | "error";
   load: CommentLoad | null;
   docs: HnDoc[];
+  /** true when the last page came back full, so more postings may exist (and we
+   *  haven't hit `PAGE_MAX`) - drives the "Load more" button. */
+  hasMore: boolean;
+  /** true while a "Load more" fetch is in flight (the current docs stay visible). */
+  loadingMore: boolean;
 };
 
-const IDLE: CommentsState = { status: "idle", load: null, docs: [] };
+const IDLE: CommentsState = {
+  status: "idle",
+  load: null,
+  docs: [],
+  hasMore: false,
+  loadingMore: false,
+};
 
 const MONTH_ABBR = [
   "Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -115,8 +134,14 @@ export function useJobComments() {
   // still warm the cache for the very next hover as the cursor crosses the dense
   // bars, so we drop stale results by id rather than tearing the request down.
   const reqId = useRef(0);
+  // The segment currently shown, so "Load more" can re-run the SAME query with a
+  // bigger page size.
+  const current = useRef<{ args: LoadArgs; limit: number } | null>(null);
 
-  const load = (args: LoadArgs) => {
+  // Shared by `load` (a fresh segment) and `loadMore` (the same segment, bigger
+  // page). `mode` only changes how the pending state renders: a fresh load shows
+  // the spinner, a "more" load keeps the current postings on screen.
+  const run = (args: LoadArgs, limit: number, mode: "fresh" | "more") => {
     const parts = parseParts(args.label);
     if (parts.length === 0) return;
 
@@ -134,28 +159,39 @@ export function useJobComments() {
     // Target the dedicated `hnjobs` index when it's ready (fast + reply-ranked);
     // otherwise the shared `hn` index scoped to jobs.
     const { index, scope } = drillIndex();
-    const key = cacheKey(index, scope, parts, from, to);
+    const key = cacheKey(index, scope, parts, from, to, limit);
+    current.current = { args, limit };
 
-    // FAST PATH: we already have this segment's ranked top-10. Show it
+    const settle = (docs: HnDoc[]) => {
+      // A full page back means there may be more (until the hard cap).
+      const hasMore = docs.length >= limit && limit < PAGE_MAX;
+      setState({ status: "done", load: meta, docs, hasMore, loadingMore: false });
+    };
+
+    // FAST PATH: we already have this segment+page's ranked list. Show it
     // synchronously - no `loading` flash, no network, no re-rank. This is the
     // repeat-hover/click case the user feels as "instant". Bump the req id so any
     // older in-flight load can't clobber it.
     const cached = resultCache.get(key);
     if (cached) {
       reqId.current++;
-      setState({ status: "done", load: meta, docs: cached });
+      settle(cached);
       return;
     }
 
     const id = ++reqId.current;
-    setState({ status: "loading", load: meta, docs: [] });
+    setState((prev) =>
+      mode === "more"
+        ? { ...prev, loadingMore: true }
+        : { status: "loading", load: meta, docs: [], hasMore: false, loadingMore: false },
+    );
 
     // Share a single in-flight fetch+rank per key so a hover immediately followed
     // by a click of the SAME segment doesn't fire two queries, and so the result
     // warms the cache even if this consumer has already moved on.
     let job = inflight.get(key);
     if (!job) {
-      job = fetchRanked(parts, { index, scope, from, to })
+      job = fetchRanked(parts, { index, scope, from, to, limit })
         .then((ranked) => {
           resultCache.set(key, ranked);
           return ranked;
@@ -169,15 +205,32 @@ export function useJobComments() {
     job
       .then((ranked) => {
         if (id !== reqId.current) return; // a newer load won
-        setState({ status: "done", load: meta, docs: ranked });
+        settle(ranked);
       })
-      .catch((e) => {
+      .catch(() => {
         if (id !== reqId.current) return;
-        setState({ status: "error", load: meta, docs: [] });
+        setState({
+          status: "error",
+          load: meta,
+          docs: [],
+          hasMore: false,
+          loadingMore: false,
+        });
       });
   };
 
-  return { state, load };
+  const load = (args: LoadArgs) => run(args, PAGE, "fresh");
+
+  /** Pull the next page of postings for the segment already on screen. */
+  const loadMore = () => {
+    const cur = current.current;
+    if (!cur) return;
+    const next = Math.min(PAGE_MAX, cur.limit + PAGE_STEP);
+    if (next === cur.limit) return; // already at the cap
+    run(cur.args, next, "more");
+  };
+
+  return { state, load, loadMore };
 }
 
 /**
@@ -189,7 +242,13 @@ export function useJobComments() {
  */
 async function fetchRanked(
   parts: string[],
-  opts: { index: ReturnType<typeof drillIndex>["index"]; scope: ReturnType<typeof drillIndex>["scope"]; from: string; to: string },
+  opts: {
+    index: ReturnType<typeof drillIndex>["index"];
+    scope: ReturnType<typeof drillIndex>["scope"];
+    from: string;
+    to: string;
+    limit: number;
+  },
 ): Promise<HnDoc[]> {
   const lists = await Promise.all(
     parts.map((p) =>
@@ -200,7 +259,7 @@ async function fetchRanked(
         from: opts.from,
         to: opts.to,
         sort: "relevance",
-        limit: 10,
+        limit: opts.limit,
       }).then((r) => r.docs),
     ),
   );
@@ -226,5 +285,5 @@ async function fetchRanked(
     })),
   )
     .map((x) => x.doc)
-    .slice(0, 10);
+    .slice(0, opts.limit);
 }

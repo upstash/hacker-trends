@@ -29,6 +29,32 @@ export function JobsLandingHeader({ crumb }: { crumb?: string }) {
   );
 }
 
+/**
+ * A big, hard-to-miss call-to-action that drops the reader into the interactive
+ * `/who-is-hiring` search tool. The landing pages are mostly read-only SEO copy,
+ * so this is the clear "go play with it yourself" affordance - a real button,
+ * not a faint header link.
+ */
+export function JobsToolCta({
+  label = "Search & compare any skill in the Who Is Hiring? tool",
+}: {
+  label?: string;
+}) {
+  return (
+    <div className="px-3 pt-4">
+      <Link
+        href="/who-is-hiring"
+        className="inline-flex items-center gap-2 rounded bg-[color:var(--hn-orange)] px-4 py-2.5 text-[13px] font-bold text-white shadow-sm hover:brightness-95"
+      >
+        {label}
+        <span aria-hidden className="text-[15px] leading-none">
+          →
+        </span>
+      </Link>
+    </div>
+  );
+}
+
 export function JobsLandingFooter() {
   return (
     <footer className="px-3 py-6 mt-8 border-t border-[color:var(--hn-subtle)]/30 text-[11px] text-[color:var(--hn-subtle)]">

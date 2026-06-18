@@ -3,12 +3,14 @@
 /**
  * The comment drill-down panel (T09).
  *
- * Shows the actual job postings behind a hovered/clicked bar segment: the top
- * 10 for that term in that month, AUTHOR + HIGHLIGHTED EXCERPT ONLY. Per the
- * spec this is stripped of all chrome - NO relative timestamp, NO "on thread",
- * NO result-count or latency readout. The matched term(s) are wrapped in the
- * same peach `#ffe1cc` mark the main search uses, and the excerpt is centered on
- * the FIRST match so the highlight is always visible.
+ * Shows the actual job postings behind a hovered/clicked bar segment: one page
+ * at a time (poster handle + highlighted excerpt), ranked by discussion. Each
+ * row also links to THAT specific posting on HN and to its `/archived/<id>`
+ * view, and a "Load more" button (when `onLoadMore` is wired) pulls the next
+ * page. The panel header carries the month-level thread links; the per-row links
+ * are for the individual posting. The matched term(s) are wrapped in the same
+ * peach `#ffe1cc` mark the main search uses, and the excerpt is centered on the
+ * FIRST match so the highlight is always visible.
  *
  * The panel is driven entirely by `useJobComments`: the last hover/click stays
  * on screen until the next one replaces it (no clear-on-mouse-leave flicker).
@@ -46,13 +48,16 @@ function threadIdFor(year: number, month: number): number | null {
 function JobsCommentsInner({
   state,
   segment,
+  onLoadMore,
 }: {
   state: CommentsState;
   segment?: DrillSegmentMeta | null;
+  /** load the next page of postings for the current segment (the "Load more"
+   *  button). Omitted on surfaces that don't paginate. */
+  onLoadMore?: () => void;
 }) {
-  const { status, load, docs } = state;
+  const { status, load, docs, hasMore, loadingMore } = state;
   const query = load ? load.parts.join(" ") : "";
-  const top = docs.slice(0, 10);
   const threadId = segment ? threadIdFor(segment.year, segment.month) : null;
 
   return (
@@ -113,39 +118,67 @@ function JobsCommentsInner({
           could not load postings
         </div>
       )}
-      {status === "done" && top.length === 0 && (
+      {status === "done" && docs.length === 0 && (
         <div className="py-3 text-[12px] text-[color:var(--hn-subtle)]">
           no matching postings in this month
         </div>
       )}
-      {status === "done" && top.length > 0 && (
-        <ol className="flex flex-col gap-2">
-          {top.map((d, i) => (
-            <li key={d.id} className="flex gap-2 text-[9pt] leading-[1.4]">
-              <span className="story-rank pt-[1px]">{i + 1}.</span>
-              <div className="min-w-0">
-                <a
-                  className="subtle mr-1"
-                  href={`https://news.ycombinator.com/item?id=${d.id}`}
-                  target="_blank"
-                  rel="noreferrer noopener"
-                >
-                  {d.by}
-                </a>
-                {/* Per-posting discussion count from the dedicated `hnjobs`
-                 *  index (`replies` = direct children). Subtle, tabular, hidden
-                 *  when the field is absent (shared `hn` index has no count). */}
-                {d.replies != null && (
-                  <span className="text-[color:var(--hn-subtle)] tabular-nums mr-1">
-                    {d.replies} {d.replies === 1 ? "reply" : "replies"}
-                    {" · "}
+      {status === "done" && docs.length > 0 && (
+        <>
+          <ol className="flex flex-col gap-2">
+            {docs.map((d, i) => (
+              <li key={d.id} className="flex gap-2 text-[9pt] leading-[1.4]">
+                <span className="story-rank pt-[1px]">{i + 1}.</span>
+                <div className="min-w-0">
+                  <a
+                    className="subtle mr-1"
+                    href={`https://news.ycombinator.com/item?id=${d.id}`}
+                    target="_blank"
+                    rel="noreferrer noopener"
+                  >
+                    {d.by}
+                  </a>
+                  {/* Per-posting discussion count from the dedicated `hnjobs`
+                   *  index (`replies` = direct children). Subtle, tabular, hidden
+                   *  when the field is absent (shared `hn` index has no count). */}
+                  {d.replies != null && d.replies > 0 && (
+                    <span className="text-[color:var(--hn-subtle)] tabular-nums mr-1">
+                      {d.replies} {d.replies === 1 ? "reply" : "replies"}
+                      {" · "}
+                    </span>
+                  )}
+                  <span>{highlight(snippet(d.text ?? "", query, 260), query)}</span>
+                  {/* Per-POSTING links (the month thread + archive sit in the
+                   *  header; these point at THIS specific job posting). */}
+                  <span className="ml-1 whitespace-nowrap text-[8.5pt]">
+                    <a
+                      className="subtle"
+                      href={`https://news.ycombinator.com/item?id=${d.id}`}
+                      target="_blank"
+                      rel="noreferrer noopener"
+                    >
+                      HN thread
+                    </a>
+                    <span className="text-[color:var(--hn-subtle)]"> · </span>
+                    <a className="subtle" href={`/archived/${d.id}`}>
+                      archived
+                    </a>
                   </span>
-                )}
-                <span>{highlight(snippet(d.text ?? "", query, 260), query)}</span>
-              </div>
-            </li>
-          ))}
-        </ol>
+                </div>
+              </li>
+            ))}
+          </ol>
+          {hasMore && onLoadMore && (
+            <button
+              type="button"
+              onClick={onLoadMore}
+              disabled={loadingMore}
+              className="mt-2 text-[11px] font-semibold text-[color:var(--hn-orange)] hover:underline disabled:opacity-60"
+            >
+              {loadingMore ? "Loading…" : "Load more"}
+            </button>
+          )}
+        </>
       )}
     </div>
   );

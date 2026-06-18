@@ -219,6 +219,14 @@ function display(term: string): string {
   return DISPLAY[term.toLowerCase()] ?? cap(term);
 }
 
+/** Public, capitalized display spelling of a term for page copy: a canonical
+ *  casing where we have one ("flutter" -> "Flutter", "typescript" ->
+ *  "TypeScript", "golang" -> "Go (Golang)"), else the first letter uppercased.
+ *  Used by the landing routes so term copy is capitalized and unquoted. */
+export function jobsDisplayTerm(term: string): string {
+  return display(term);
+}
+
 /* ---------------------------------------------------- curated term pages */
 /* High-value single-skill pages: keyword-led title ("<term> jobs ...") + a
  * specific, non-templated analysis paragraph. Keyed by termToSlug(term). */

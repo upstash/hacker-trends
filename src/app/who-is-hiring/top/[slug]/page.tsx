@@ -22,11 +22,15 @@ import {
   jobsCategorySeo,
   categoryCardBySlug,
   allJobsCategorySlugs,
+  jobsDisplayTerm,
 } from "@/lib/jobs-seo";
 import { getJobsComparisonLanding } from "@/lib/jobs-landing-data";
-import { JobsStaticStacked } from "../../_seo/JobsStaticStacked";
 import { JobsLandingChart } from "../../JobsLandingChart";
-import { JobsLandingHeader, JobsLandingFooter } from "../../JobsLandingChrome";
+import {
+  JobsLandingHeader,
+  JobsLandingFooter,
+  JobsToolCta,
+} from "../../JobsLandingChrome";
 import { JsonLd } from "@/app/components/JsonLd";
 import { colorAt } from "@/lib/jobs-trends";
 
@@ -78,8 +82,8 @@ export default async function WhoIsHiringTopPage({
   const path = `/who-is-hiring/top/${slug}`;
   const terms = card.terms;
 
-  // Series + per-term stats + a sample of postings per term, server-side.
-  const { series, perSeries } = await getJobsComparisonLanding(terms, 2);
+  // Per-term stats + a sample of postings per term, server-side.
+  const { perSeries } = await getJobsComparisonLanding(terms, 2);
 
   // The leaderboard: terms ranked by all-time postings, the page's core answer.
   const ranked = [...perSeries].sort((a, b) => b.stats.total - a.stats.total);
@@ -128,6 +132,9 @@ export default async function WhoIsHiringTopPage({
         </p>
       </div>
 
+      {/* Big, obvious path into the interactive tool. */}
+      <JobsToolCta label={`Explore ${card.title} in the Who Is Hiring? tool`} />
+
       {/* leaderboard - the direct, scannable answer to the question */}
       <div className="px-3 pt-4">
         <h2 className="text-[14px] font-bold">Ranked by demand (all-time)</h2>
@@ -148,7 +155,7 @@ export default async function WhoIsHiringTopPage({
                 href={`/who-is-hiring/${termToSlug(ps.term)}`}
                 className="font-semibold"
               >
-                {ps.term}
+                {jobsDisplayTerm(ps.term)}
               </Link>
               <span className="text-[11px] text-[color:var(--hn-subtle)] tabular-nums">
                 {ps.stats.total.toLocaleString()} postings
@@ -159,14 +166,16 @@ export default async function WhoIsHiringTopPage({
         </ol>
       </div>
 
-      {/* server-static relative-stacked chart */}
+      {/* The main interactive chart - the same one the hub renders, seeded with
+          this category. Opens on raw counts; flip to share % to stack the bands
+          to 100% and see each one's slice, or click a month for the postings. */}
       <div className="px-3 pt-4">
-        <div className="border border-[color:var(--hn-subtle)]/30 rounded bg-white p-2">
-          <JobsStaticStacked series={series} />
-        </div>
-        <p className="text-[11px] text-[color:var(--hn-subtle)] mt-1">
-          Each calendar month since 2011 as one stacked bar, normalized to 100%
-          so the bands show each one’s share of the category’s postings.
+        <JobsLandingChart initialTerms={terms} />
+        <p className="text-[11px] text-[color:var(--hn-subtle)] mt-2 max-w-[760px] leading-relaxed">
+          Each calendar month since 2011 as one bar. Switch to share % to stack
+          the bands to 100% and see each one&rsquo;s slice of the category&rsquo;s
+          postings, narrow the window, or click a month to read the postings
+          behind the bar.
         </p>
       </div>
 
@@ -188,7 +197,7 @@ export default async function WhoIsHiringTopPage({
       {leader && leader.postings.length > 0 && (
         <div className="px-3 pt-6">
           <h2 className="text-[14px] font-bold">
-            Recent “{leader.term}” postings (the category leader)
+            Popular {jobsDisplayTerm(leader.term)} postings (the category leader)
           </h2>
           <ol className="mt-2 flex flex-col gap-3">
             {leader.postings.map((p) => {
@@ -225,18 +234,6 @@ export default async function WhoIsHiringTopPage({
         </div>
       )}
 
-      {/* interactive chart */}
-      <div className="px-3 pt-6">
-        <h2 className="text-[14px] font-bold">Explore this category</h2>
-        <p className="text-[12px] text-[color:var(--hn-subtle)] mt-1 max-w-[760px] leading-relaxed">
-          Switch between share-of-voice and raw counts, narrow the window, and
-          click any month to read the postings behind the bar.
-        </p>
-        <div className="pt-3">
-          <JobsLandingChart initialTerms={terms} />
-        </div>
-      </div>
-
       {/* per-term deep links */}
       <div className="px-3 pt-6">
         <h2 className="text-[14px] font-bold">Each skill on its own</h2>
@@ -248,7 +245,7 @@ export default async function WhoIsHiringTopPage({
                 style={{ color: colorAt(i) }}
                 className="font-semibold"
               >
-                {t} jobs →
+                {jobsDisplayTerm(t)} jobs →
               </Link>
             </li>
           ))}

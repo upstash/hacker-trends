@@ -42,7 +42,8 @@ export function WhoIsHiringSearch() {
   const { series, loading } = useJobSeries(terms);
 
   // The hover/click drill-down (T09).
-  const { state: commentsState, load: loadComments } = useJobComments();
+  const { state: commentsState, load: loadComments, loadMore: loadMoreComments } =
+    useJobComments();
 
   // The segment behind the current drill-down: its raw count + calendar month.
   // `useJobComments`'s `CommentLoad` doesn't carry these, so we track them here
@@ -226,7 +227,11 @@ export function WhoIsHiringSearch() {
 
       {/* Comment drill-down (T09) ------------------------------------ */}
       <div className="px-3 pt-4 min-h-[240px]">
-        <JobsComments state={commentsState} segment={drillMeta} />
+        <JobsComments
+          state={commentsState}
+          segment={drillMeta}
+          onLoadMore={loadMoreComments}
+        />
       </div>
 
       {/* Galleries (T12) --------------------------------------------- */}

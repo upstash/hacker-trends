@@ -1,18 +1,17 @@
 /**
  * Programmatic SEO landing page: `/who-is-hiring/[term]` (e.g. `/python`).
  *
- * Reframed (T18) to be GENUINELY USEFUL TO A JOB-SEEKER, and FULLY
- * SERVER-RENDERED so Google (and a no-JS visitor) indexes the real content, not
- * a client-only chart. Everything is fetched server-side at render/revalidate
- * time and emitted in the initial HTML:
+ * Reframed (T18) to be GENUINELY USEFUL TO A JOB-SEEKER. The server-rendered
+ * body carries the indexable content (Google and a no-JS visitor see the real
+ * copy, stats and postings); the trend chart itself is the live interactive
+ * `JobsLandingChart` (the same centerpiece the hub renders), which hydrates over
+ * its reserved height after paint. What's emitted server-side:
  *
- *   - a server-static trend chart (`JobsStaticStacked`, plain SVG, the SAME
- *     `jobs-trends.ts` binning the live chart uses);
  *   - quick stats a job-seeker cares about (total postings mentioning the skill,
  *     the latest month's count, the peak month, the remote share);
- *   - a sample of the REAL recent job postings that mention the skill - the
- *     posting text snippet, the poster handle, a link to the HN post and to the
- *     in-app `/archived/<thread>` view (`JobsPostingSample`);
+ *   - the REAL postings: this month's, then the most-discussed - poster handle,
+ *     text snippet, per-posting HN + `/archived/<thread>` links
+ *     (`JobsPostingSample`, fed by `getJobsTermLanding`);
  *   - the curated keyword-led analysis from `jobs-seo.ts`;
  *   - dense internal links into the hub, sibling skills and the comparisons.
  *
@@ -25,17 +24,20 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { abs, termToSlug, comparisonSlug, slugToTerm } from "@/lib/site";
-import { jobsTermSeo, hasCuratedJobsTerm } from "@/lib/jobs-seo";
+import { jobsTermSeo, hasCuratedJobsTerm, jobsDisplayTerm } from "@/lib/jobs-seo";
 import {
   allGalleryTerms,
   jobsSiblingTerms,
   jobsComparisonsForTerm,
 } from "@/lib/jobs-gallery";
 import { getJobsTermLanding } from "@/lib/jobs-landing-data";
-import { JobsStaticStacked } from "../_seo/JobsStaticStacked";
 import { JobsPostingSample } from "../_seo/JobsPostingSample";
 import { JobsLandingChart } from "../JobsLandingChart";
-import { JobsLandingHeader, JobsLandingFooter } from "../JobsLandingChrome";
+import {
+  JobsLandingHeader,
+  JobsLandingFooter,
+  JobsToolCta,
+} from "../JobsLandingChrome";
 import { JsonLd } from "@/app/components/JsonLd";
 
 // Rendered on demand from live Upstash Redis Search (via the `@upstash/redis`
@@ -89,10 +91,11 @@ export default async function WhoIsHiringTermPage({
   if (!term) notFound();
 
   const seo = jobsTermSeo(term);
+  const display = jobsDisplayTerm(term);
   const path = `/who-is-hiring/${termToSlug(term)}`;
 
   // All the page's data, server-side, at render/revalidate time.
-  const { series, stats, postings, remote } = await getJobsTermLanding(term);
+  const { stats, postings, remote } = await getJobsTermLanding(term);
 
   const siblings = jobsSiblingTerms(term, 8);
   const relatedComparisons = jobsComparisonsForTerm(term);
@@ -122,21 +125,24 @@ export default async function WhoIsHiringTermPage({
   return (
     <div className="mx-auto" style={{ maxWidth: 1000 }}>
       <JsonLd data={jsonLd} />
-      <JobsLandingHeader crumb={`“${term}” in job postings`} />
+      <JobsLandingHeader crumb={`${display} in job postings`} />
 
       <div className="px-3 pt-4">
         <p className="text-[11px] text-[color:var(--hn-subtle)] mb-1">
           <Link href="/who-is-hiring">Who Is Hiring? Search</Link> ›{" "}
-          <span>“{term}”</span>
+          <span>{display}</span>
         </p>
         <h1 className="text-[20px] font-bold leading-tight">
-          “{term}” jobs on Hacker News - who is hiring, and how demand trends
+          {display} jobs on Hacker News - Who is hiring, and how demand trends
         </h1>
         {/* Lead with the description copy a featured snippet can lift verbatim. */}
         <p className="text-[14px] mt-2 max-w-[760px] leading-relaxed font-medium">
           {seo.description}
         </p>
       </div>
+
+      {/* Big, obvious path into the interactive tool. */}
+      <JobsToolCta label={`Search & compare ${display} in the Who Is Hiring? tool`} />
 
       {/* stat strip - the quick numbers a job-seeker scans first */}
       <div className="px-3 pt-4 flex flex-wrap gap-x-8 gap-y-2 text-[12px]">
@@ -161,31 +167,44 @@ export default async function WhoIsHiringTermPage({
         )}
       </div>
 
-      {/* server-static trend chart - real SVG in the initial HTML so it's
-          indexable; the interactive version follows below */}
-      <div className="px-3 pt-4">
-        <div className="border border-[color:var(--hn-subtle)]/30 rounded bg-white p-2">
-          <JobsStaticStacked series={series} />
-        </div>
-        <p className="text-[11px] text-[color:var(--hn-subtle)] mt-1">
-          Monthly job postings mentioning “{term}” in the Hacker News “Who is
-          hiring?” thread, one bar per calendar month since 2011.
+      {/* The main interactive chart - the same one the hub renders, seeded with
+          this skill. A single-skill page opens on raw monthly counts (share % is
+          a meaningless flat band with one term, so that toggle is hidden); add
+          another skill via the chips to unlock the share-of-voice view. */}
+      <div className="px-3 pt-5">
+        <JobsLandingChart initialTerms={[term]} />
+        <p className="text-[11px] text-[color:var(--hn-subtle)] mt-2 max-w-[760px] leading-relaxed">
+          Monthly {display} job postings in the Hacker News Who is hiring? thread,
+          one bar per calendar month since 2011. Narrow the window, add another
+          skill to compare, and click any month to read the postings behind the
+          bar.
         </p>
       </div>
 
-      {/* sample of the REAL postings - the indexable content a job-seeker
-          actually wants; server-rendered, not the client drill-down */}
+      {/* the REAL postings, server-rendered (not the client drill-down): this
+          month's, then the most-discussed. Indexable content a job-seeker wants. */}
       <JobsPostingSample
-        postings={postings}
+        postings={postings.month}
         term={term}
-        heading={`Recent “${term}” job postings on Hacker News`}
+        heading={`${display} job postings for ${postings.monthLabel}`}
+      />
+      <JobsPostingSample
+        postings={postings.popular}
+        term={term}
+        heading={`Some popular ${display} job postings`}
+        subheading={
+          postings.popularYear
+            ? `The ${display} job postings that drew the most discussion in ${postings.popularYear}.`
+            : `The ${display} job postings that drew the most discussion.`
+        }
+        showReplies
       />
 
       {/* custom analysis - the unique, non-templated content */}
       {seo.analysis.length > 0 && (
         <div className="px-3 pt-6">
           <h2 className="text-[14px] font-bold">
-            What the “{term}” hiring trend shows
+            What the {display} hiring trend shows
           </h2>
           <div className="mt-1 max-w-[760px] space-y-2">
             {seo.analysis.map((p, i) => (
@@ -197,22 +216,6 @@ export default async function WhoIsHiringTermPage({
         </div>
       )}
 
-      {/* interactive chart - explore other months/terms without leaving. Below
-          the fold and below the server content, so it's an enhancement, not the
-          indexable surface. */}
-      <div className="px-3 pt-6">
-        <h2 className="text-[14px] font-bold">
-          Explore “{term}” - filter by month and compare
-        </h2>
-        <p className="text-[12px] text-[color:var(--hn-subtle)] mt-1 max-w-[760px] leading-relaxed">
-          Switch between share-of-voice and raw counts, narrow the window, add
-          another skill, and click any month to read the postings behind the bar.
-        </p>
-        <div className="pt-3">
-          <JobsLandingChart initialTerms={[term]} />
-        </div>
-      </div>
-
       {/* internal links - wire this page into the link graph */}
       <div className="px-3 pt-6">
         <h2 className="text-[14px] font-bold">More to explore</h2>
@@ -220,7 +223,7 @@ export default async function WhoIsHiringTermPage({
         {relatedComparisons.length > 0 && (
           <div className="mt-2">
             <div className="text-[11px] uppercase tracking-wide text-[color:var(--hn-subtle)]">
-              “{term}” head-to-head
+              {display} head-to-head
             </div>
             <ul className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-[13px]">
               {relatedComparisons.map((c) => (
@@ -259,7 +262,7 @@ export default async function WhoIsHiringTermPage({
 
         <p className="text-[12px] mt-4">
           <Link href="/who-is-hiring" className="text-[color:var(--hn-orange)]">
-            Compare “{term}” with anything else
+            Compare {display} with anything else
           </Link>{" "}
           on the full Who Is Hiring? chart, or see{" "}
           <Link href="/">how every term trends across all of Hacker News</Link>.

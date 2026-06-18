@@ -60,8 +60,8 @@ export async function generateMetadata({
   const { term: slug } = await params;
   const term = slugToTerm(slug);
   const display = titleCase(term);
-  const title = `“${term}” on Hacker News - ${HISTORY_SPAN_YEARS} years of mentions, charted`;
-  const description = `How often "${term}" came up on Hacker News from ${HISTORY_FROM_YEAR} to ${HISTORY_TO_YEAR}: a live mention-over-time chart, the peak month, and the top stories - powered by Upstash Redis Search.`;
+  const title = `${display} on Hacker News - ${HISTORY_SPAN_YEARS} years of mentions, charted`;
+  const description = `How often ${display} came up on Hacker News from ${HISTORY_FROM_YEAR} to ${HISTORY_TO_YEAR}: a live mention-over-time chart, the peak month, and the top stories - powered by Upstash Redis Search.`;
   const path = `/trends/${termToSlug(term)}`;
   return {
     title,
@@ -132,15 +132,15 @@ export default async function TrendPage({
   return (
     <div className="mx-auto" style={{ maxWidth: 1000 }}>
       <JsonLd data={jsonLd} />
-      <LandingHeader crumb={`“${term}” on Hacker News`} />
+      <LandingHeader crumb={`${display} on Hacker News`} />
 
       <div className="px-3 pt-4">
         <p className="text-[11px] text-[color:var(--hn-subtle)] mb-1">
           <Link href="/">Hacker Trends</Link> ›{" "}
-          <span>“{term}” trend</span>
+          <span>{display} trend</span>
         </p>
         <h1 className="text-[20px] font-bold leading-tight">
-          How “{term}” trended on Hacker News
+          How {display} trended on Hacker News
         </h1>
         {/* Lead with the answer: the headline numbers in one plain sentence, the
             line a featured snippet or an AI answer can lift verbatim. */}
@@ -149,7 +149,7 @@ export default async function TrendPage({
         </p>
         <p className="text-[12px] text-[color:var(--hn-subtle)] mt-2 max-w-[760px] leading-relaxed">
           Every month from {HISTORY_FROM_YEAR} to {HISTORY_TO_YEAR}, counting how
-          often “{term}” appears in Hacker News stories and comments. Each point
+          often {display} appears in Hacker News stories and comments. Each point
           is a live date-histogram over ~45M items, computed with{" "}
           <OutboundLink
             destination="upstash"
@@ -187,7 +187,7 @@ export default async function TrendPage({
             href={compareHref}
             className="inline-block text-[12px] font-semibold text-[color:var(--hn-orange)]"
           >
-            Explore “{term}” in the interactive tool - filter by date, sort, and
+            Explore {display} in the interactive tool - filter by date, sort, and
             compare against other terms →
           </Link>
         </div>
@@ -212,7 +212,7 @@ export default async function TrendPage({
       {stories.length > 0 && (
         <div className="px-3 pt-6">
           <h2 className="text-[14px] font-bold">
-            Top Hacker News stories about “{term}”
+            Top Hacker News stories about {display}
           </h2>
           <ol className="mt-2 space-y-2">
             {stories.map((s, i) => {
@@ -256,7 +256,7 @@ export default async function TrendPage({
         {relatedComparisons.length > 0 && (
           <div className="mt-2">
             <div className="text-[11px] uppercase tracking-wide text-[color:var(--hn-subtle)]">
-              “{term}” head-to-head
+              {display} head-to-head
             </div>
             <ul className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-[13px]">
               {relatedComparisons.map((c) => (
@@ -309,7 +309,7 @@ export default async function TrendPage({
 
         <p className="text-[12px] mt-4">
           <Link href="/" className="text-[color:var(--hn-orange)]">
-            Compare “{term}” with anything else
+            Compare {display} with anything else
           </Link>{" "}
           on the main chart, or see{" "}
           <Link href="/how-it-works">how Hacker Trends works</Link>.

@@ -227,7 +227,7 @@ export default async function ComparePage({
                     className="text-[12px] font-semibold mb-1"
                     style={{ color: s.color }}
                   >
-                    Top “{s.term}” stories
+                    Top {s.term} stories
                   </div>
                   <ol className="space-y-1.5">
                     {s.stories.map((st) => {
@@ -270,7 +270,7 @@ export default async function ComparePage({
                 style={{ color: s.color }}
                 className="font-semibold"
               >
-                How “{s.term}” trended on Hacker News →
+                How {s.term} trended on Hacker News →
               </Link>
             </li>
           ))}

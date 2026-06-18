@@ -45,8 +45,13 @@ export const PALETTE = [
 /** The most series the compare chips allow at once (locked in the PRD). */
 export const MAX_SERIES = 8;
 
-/** Default custom comparison - a triple reads well as a relative stack. */
-export const DEFAULT_TERMS = ["python", "javascript", "typescript"];
+/** Default comparison the hub opens on: the "Top 8 languages" set. Eight bands
+ *  read as a rich relative stack (the share-of-voice view people like), and it
+ *  mirrors the `/who-is-hiring/top/top-8-languages` gallery card 1:1. Capped at
+ *  MAX_SERIES (8). */
+export const DEFAULT_TERMS = [
+  "python", "javascript", "ruby", "typescript", "java", "php", "scala", "golang",
+];
 
 /** The color for the series at index `i` (wraps the palette). */
 export const colorAt = (i: number): string => PALETTE[i % PALETTE.length];

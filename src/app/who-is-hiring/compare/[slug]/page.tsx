@@ -23,12 +23,16 @@ import {
   jobsComparisonSeo,
   jobsComparisonQuestionSeo,
   hasCuratedJobsComparison,
+  jobsDisplayTerm,
 } from "@/lib/jobs-seo";
 import { comparisonTermSets, COMPARISONS } from "@/lib/jobs-gallery";
 import { getJobsComparisonLanding } from "@/lib/jobs-landing-data";
-import { JobsStaticStacked } from "../../_seo/JobsStaticStacked";
 import { JobsLandingChart } from "../../JobsLandingChart";
-import { JobsLandingHeader, JobsLandingFooter } from "../../JobsLandingChrome";
+import {
+  JobsLandingHeader,
+  JobsLandingFooter,
+  JobsToolCta,
+} from "../../JobsLandingChrome";
 import { JsonLd } from "@/app/components/JsonLd";
 import { colorAt } from "@/lib/jobs-trends";
 
@@ -55,10 +59,12 @@ function termsForSlug(slug: string): string[] {
     .filter(Boolean);
 }
 
-/** Display label for one series string: collapse an OR-group to its parts joined
- *  with " / " for prose ("ai|ml|llm" reads "ai / ml / llm"). */
+/** Display label for one series string: capitalized, with an OR-group collapsed
+ *  to its parts joined by " / " ("ai|ml|llm" reads "AI / ML / LLM"). */
 function seriesLabel(s: string): string {
-  return s.includes("|") ? s.split("|").map((p) => p.trim()).join(" / ") : s;
+  return s.includes("|")
+    ? s.split("|").map((p) => jobsDisplayTerm(p.trim())).join(" / ")
+    : jobsDisplayTerm(s);
 }
 
 /** The SEO copy for a slug: the question copy when this is a curated gallery
@@ -115,7 +121,7 @@ export default async function WhoIsHiringComparePage({
   const vs = labels.join(" vs ");
 
   // All page data, server-side.
-  const { series, perSeries } = await getJobsComparisonLanding(terms, 3);
+  const { perSeries } = await getJobsComparisonLanding(terms, 3);
 
   // Cross-links to a few other comparison stories (skip this one).
   const otherComparisons = COMPARISONS.filter(
@@ -148,6 +154,9 @@ export default async function WhoIsHiringComparePage({
         </p>
       </div>
 
+      {/* Big, obvious path into the interactive tool. */}
+      <JobsToolCta label={`Compare ${vs} in the Who Is Hiring? tool`} />
+
       {/* legend */}
       <div className="px-3 pt-3 flex flex-wrap gap-x-5 gap-y-1 text-[12px]">
         {labels.map((label, i) => (
@@ -161,14 +170,16 @@ export default async function WhoIsHiringComparePage({
         ))}
       </div>
 
-      {/* server-static relative-stacked chart - real SVG in the initial HTML */}
+      {/* The main interactive chart - the same one the hub renders, seeded with
+          this comparison. Opens on raw counts; flip to share % to see each
+          side's slice, narrow the window, or click a month for the postings. */}
       <div className="px-3 pt-3">
-        <div className="border border-[color:var(--hn-subtle)]/30 rounded bg-white p-2">
-          <JobsStaticStacked series={series} />
-        </div>
-        <p className="text-[11px] text-[color:var(--hn-subtle)] mt-1">
-          Each calendar month since 2011 as one stacked bar, normalized to 100%
-          so the bands show each side’s share of the “Who is hiring?” postings.
+        <JobsLandingChart initialTerms={terms} />
+        <p className="text-[11px] text-[color:var(--hn-subtle)] mt-2 max-w-[760px] leading-relaxed">
+          Each calendar month since 2011 as one bar. Switch to share % to stack
+          the bands to 100% and see each side&rsquo;s slice of the Who is hiring?
+          postings, narrow the window, or click any month to read the postings
+          behind the bar.
         </p>
       </div>
 
@@ -212,18 +223,6 @@ export default async function WhoIsHiringComparePage({
         </div>
       </div>
 
-      {/* interactive chart - explore without leaving (below the indexable copy) */}
-      <div className="px-3 pt-6">
-        <h2 className="text-[14px] font-bold">Explore this comparison</h2>
-        <p className="text-[12px] text-[color:var(--hn-subtle)] mt-1 max-w-[760px] leading-relaxed">
-          Switch between share-of-voice and raw counts, narrow the window, and
-          click any month to read the postings behind the bar.
-        </p>
-        <div className="pt-3">
-          <JobsLandingChart initialTerms={terms} />
-        </div>
-      </div>
-
       {/* curated one-line story (when this is a gallery comparison) */}
       {curated?.story && (
         <div className="px-3 pt-4">
@@ -246,7 +245,7 @@ export default async function WhoIsHiringComparePage({
                   style={{ color: colorAt(i) }}
                   className="font-semibold"
                 >
-                  “{seriesLabel(s)}” jobs on Hacker News →
+                  {seriesLabel(s)} jobs on Hacker News →
                 </Link>
               </li>
             );
