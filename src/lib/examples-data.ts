@@ -18,7 +18,7 @@
  * handlers / server components, never from a "use client" file.
  */
 
-import { buildAggregateArgs, parseAggregations } from "@/lib/hn-query";
+import { hnRedis, runAggregate } from "@/lib/hn-index";
 import { CATALOG_VERSION, allExampleTerms } from "@/lib/examples";
 
 /** Lean monthly point: just what the gallery sparklines plot. We drop the
@@ -26,8 +26,9 @@ import { CATALOG_VERSION, allExampleTerms } from "@/lib/examples";
  *  anyway) since it was ~55% of the cached blob's bytes. */
 export type MonthCount = { key: number; docCount: number };
 
-const URL_ENDPOINT = process.env.UPSTASH_REDIS_REST_URL;
-const TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
+const HAS_CREDS = !!(
+  process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN
+);
 
 const CACHE_KEY = `examples:${CATALOG_VERSION}`;
 const CACHE_TTL_SECONDS = 60 * 60 * 24 * 30; // 30 days
@@ -40,38 +41,22 @@ export type ExamplesData = {
   terms: Record<string, MonthCount[]>;
 };
 
-/** Run one Redis command via the Upstash REST command-array endpoint. Returns
- *  null on any failure (missing creds, write denied on a read-only token, …) so
- *  callers can treat the cache as strictly best-effort. */
-async function redisCommand<T>(cmd: (string | number)[]): Promise<T | null> {
-  if (!URL_ENDPOINT || !TOKEN) return null;
-  try {
-    const r = await fetch(URL_ENDPOINT, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${TOKEN}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(cmd),
-      cache: "no-store",
-    });
-    if (!r.ok) return null;
-    const j = (await r.json()) as { result?: T; error?: string };
-    if (j.error) return null;
-    return (j.result ?? null) as T | null;
-  } catch {
-    return null;
-  }
-}
+/** The SDK client (env-driven). All Upstash access - the per-term aggregates AND
+ *  the single cache key GET/SET - goes through it; everything is best-effort, so
+ *  a missing-creds or read-only-token failure degrades to live compute, never a
+ *  crash (callers treat the cache as strictly an optimization). */
+const redis = HAS_CREDS ? hnRedis() : null;
 
-/** One term's monthly histogram, via the exact same aggregate the app runs,
+/** One term's monthly histogram, via the exact same SDK aggregate the app runs,
  *  stripped to the lean {key, docCount} points the gallery plots. */
 async function fetchBuckets(term: string): Promise<MonthCount[]> {
-  const raw = await redisCommand<unknown>(buildAggregateArgs({ q: term }));
-  return parseAggregations(raw).buckets.map((b) => ({
-    key: b.key,
-    docCount: b.docCount,
-  }));
+  if (!redis) return [];
+  try {
+    const agg = await runAggregate(redis, { q: term });
+    return agg.buckets.map((b) => ({ key: b.key, docCount: b.docCount }));
+  } catch {
+    return [];
+  }
 }
 
 async function mapLimit<T, R>(
@@ -111,24 +96,29 @@ async function compute(): Promise<ExamplesData> {
 export async function getExamplesData(opts?: {
   fresh?: boolean;
 }): Promise<ExamplesData> {
-  if (!opts?.fresh) {
-    const cached = await redisCommand<string>(["GET", CACHE_KEY]);
-    if (cached) {
-      try {
-        const d = JSON.parse(cached) as ExamplesData;
-        if (d?.version === CATALOG_VERSION && d.terms) return d;
-      } catch {
-        // fall through to recompute on a corrupt/legacy value
-      }
+  if (!opts?.fresh && redis) {
+    try {
+      // The SDK auto-deserializes JSON values, so the cached blob comes back as
+      // the parsed object (or a string if it was stored raw) - handle both.
+      const cached = await redis.get<ExamplesData | string>(CACHE_KEY);
+      const d =
+        typeof cached === "string"
+          ? (JSON.parse(cached) as ExamplesData)
+          : cached;
+      if (d?.version === CATALOG_VERSION && d.terms) return d;
+    } catch {
+      // fall through to recompute on a missing/corrupt/legacy value
     }
   }
   const data = await compute();
-  await redisCommand([
-    "SET",
-    CACHE_KEY,
-    JSON.stringify(data),
-    "EX",
-    CACHE_TTL_SECONDS,
-  ]);
+  if (redis) {
+    // Best-effort: a read-only token (prod) just rejects the write, which is
+    // fine - the key is primed once from a writable env and read everywhere.
+    try {
+      await redis.set(CACHE_KEY, JSON.stringify(data), { ex: CACHE_TTL_SECONDS });
+    } catch {
+      // ignore: cache is an optimization, never a hard dependency
+    }
+  }
   return data;
 }

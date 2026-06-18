@@ -6,6 +6,10 @@ import { buildOgChart, ogChartSvg } from "@/lib/og-chart";
 export const alt = "Hacker News trend comparison";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
+// Drawn from live Upstash Redis Search (via the `@upstash/redis` SDK), so render
+// on demand and let the CDN cache the PNG - don't prerender every slug's image at
+// build time (matches the prior `cache:"no-store"` data-layer behavior).
+export const dynamic = "force-dynamic";
 
 const COMPARE_COLORS = ["#1f6feb", "#ff6600", "#1a7f37", "#cf222e", "#8250df"];
 

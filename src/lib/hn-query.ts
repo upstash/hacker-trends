@@ -1,15 +1,46 @@
 /**
  * Transport-agnostic Hacker News search query logic.
  *
- * This is the single source of truth for *what* Redis command we run, kept
- * deliberately free of any `fetch`/env coupling. The browser client
- * (`hn-search.ts`) and the live edge proxy (`src/app/api/hn/route.ts`) both
- * import from here, so the command args are built in exactly one place and the
- * wire contract is just `?op=&q=&sort=&…`.
+ * This is the single source of truth for *what* Redis Search query we run, kept
+ * deliberately free of any `fetch`/env coupling. The builders here produce the
+ * OPTION objects the `@upstash/redis` search SDK takes -
+ * `redis.search.index({ name }).query({ filter, limit, orderBy?, scoreFunc? })`
+ * and `.aggregate({ filter, aggregations })` - which `hn-index.ts` runs and the
+ * "show the code" panel renders, so the executed call and the displayed snippet
+ * are built from the SAME function and cannot drift.
  *
  * NOTE: these builders run inside the Vercel Edge runtime (the `/api/hn`
- * route), so keep this module on web-standard APIs only, no Node built-ins.
+ * route via `hn-index.ts`), so keep this module on web-standard APIs only, no
+ * Node built-ins.
  */
+
+import { JOB_THREAD_IDS } from "./who-is-hiring-data";
+
+/**
+ * A query "scope" narrows the matched set to a subcorpus before the term match
+ * is applied. Today the only scope is `jobs`: the top-level comments under the
+ * monthly "Ask HN: Who is hiring?" threads, i.e. the individual job postings.
+ * Everything else (no scope) searches all of Hacker News.
+ */
+export type Scope = "jobs" | undefined;
+
+/**
+ * Which Upstash Search index a SEARCH.QUERY runs against.
+ *
+ * `hn` (default) is the shared all-of-Hacker-News index. `hnjobs` is the
+ * dedicated postings index built by scripts/ingest-jobs.ts: it holds ONLY the
+ * "Who is hiring?" job postings, each with a precomputed `replies` field (the
+ * direct-children discussion count). The drill-down targets `hnjobs` when it's
+ * present so the search is fast AND can rank by `relevance + log(1 + replies)`;
+ * it falls back to `hn` (scope=jobs) when the dedicated index isn't there.
+ *
+ * `hnjobs` is already scoped to postings, so no `scope=jobs` parent arm is added
+ * for it, and its discussion signal is `replies` rather than the comment-only
+ * `ndesc` field (which is always 0 on the shared index).
+ */
+export type SearchIndex = "hn" | "hnjobs";
+export const DEFAULT_INDEX: SearchIndex = "hn";
+const JOBS_INDEX: SearchIndex = "hnjobs";
 
 export type HnDoc = {
   id: number;
@@ -23,6 +54,9 @@ export type HnDoc = {
   parent?: number;
   url?: string;
   _score?: number; // BM25 relevance from Redis
+  /** Precomputed direct-children reply count. Only present on `hnjobs` docs
+   *  (the drill-down ranks by it); absent/undefined on shared `hn` docs. */
+  replies?: number;
 };
 
 export type SortMode = "relevance" | "score" | "recent" | "discussed";
@@ -72,7 +106,17 @@ export function tokenize(q: string): string[] {
 // burying those popular variants under tiny exact-title posts, so we don't.
 const PHRASE_BOOST = 3.0;
 
-export type FilterOpts = { phraseBoost?: boolean };
+export type FilterOpts = { phraseBoost?: boolean; scope?: Scope };
+
+/** The "Who is hiring?" subcorpus arm: match only comments whose immediate
+ *  parent is one of the monthly hiring threads (each such comment is a job
+ *  posting). It's an `$or` over ~180 parent ids; ANDed with the term arms it
+ *  restricts the trend/search to job postings. Performance is fine: a parent is
+ *  a fast numeric equality, and the whole aggregate returns in well under a
+ *  second (the response is then CDN-cached by /api/hn). */
+function jobScopeArm(): Record<string, unknown> {
+  return { $or: JOB_THREAD_IDS.map((id) => ({ parent: id })) };
+}
 
 /**
  * Build the SEARCH.QUERY filter.
@@ -150,6 +194,11 @@ export function buildFilter(
   if (by) must.push({ by });
   if (type) must.push({ type });
 
+  // Scope: restrict the whole match to the "Who is hiring?" job postings. Added
+  // as another hard $and arm, exactly like the token arms - a job posting is a
+  // comment whose parent is one of the monthly threads.
+  if (opts?.scope === "jobs") must.push(jobScopeArm());
+
   if (must.length === 0) return {};
   if (must.length === 1) return must[0];
   return { $and: must };
@@ -159,10 +208,16 @@ export type SearchArgsOpts = {
   q: string;
   sort: SortMode;
   limit?: number;
+  /** Skip this many results (for SDK limit/offset pagination). */
+  offset?: number;
   from?: string;
   to?: string;
   by?: string;
   type?: string;
+  scope?: Scope;
+  /** Which index to query. Defaults to `hn`; `hnjobs` is the dedicated postings
+   *  index (pre-scoped, ranks by `replies`). */
+  index?: SearchIndex;
 };
 
 // Relevance ranking weights. finalScore = BM25(text relevance, phrase-boosted)
@@ -176,58 +231,92 @@ export type SearchArgsOpts = {
 const POINTS_FACTOR = 50;
 const COMMENTS_FACTOR = 30;
 
-/** Build the SEARCH.QUERY command args (everything after the verb). */
-export function buildSearchArgs(opts: SearchArgsOpts): (string | number)[] {
-  const { q, sort, limit = 30, from, to, by, type } = opts;
-  // phraseBoost only affects the relevance ORDER, so only build it in for that.
+// The drill-down ranking weight on a posting's direct-reply count, when querying
+// the dedicated `hnjobs` index. Mirrors src/lib/jobs-trends.ts `rankKey`'s
+// `relevance + log(1 + replies)`: BM25 relevance plus a log1p reply boost. We use
+// the same gentle COMMENTS_FACTOR so a heavily-discussed posting rises without a
+// single mega-thread swamping pure relevance.
+const REPLIES_FACTOR = COMMENTS_FACTOR;
+
+/** The `scoreFunc` shape the SDK takes: a list of field signals, each run
+ *  through a modifier and scaled by a factor, combined with each other and with
+ *  the BM25 relevance. */
+type ScoreFunc = {
+  fields: { field: string; modifier: "log1p"; factor: number }[];
+  combineMode: "sum";
+  scoreMode: "sum";
+};
+
+/** The SDK `query({...})` option object (everything after the index). */
+export type SearchOptions = {
+  filter: Record<string, unknown>;
+  limit: number;
+  offset?: number;
+  orderBy?: Record<string, "ASC" | "DESC">;
+  scoreFunc?: ScoreFunc;
+};
+
+/**
+ * Build the SDK `query()` options for a search. Returns the chosen index plus
+ * the option object passed straight to `redis.search.index({ name }).query()`.
+ * This is the single source of truth for the search shape: `hn-index.ts` runs
+ * it and `searchSnippet` renders it.
+ */
+export function buildSearchOptions(
+  opts: SearchArgsOpts,
+): { index: SearchIndex; options: SearchOptions } {
+  const { q, sort, limit = 30, from, to, by, type, scope, offset, index = DEFAULT_INDEX } = opts;
+  const onJobsIndex = index === JOBS_INDEX;
+  // The `hnjobs` index already contains ONLY postings, so the scope=jobs parent
+  // arm is redundant (and its ~180-id $or would just slow the filter). Drop it
+  // there; keep it for the shared `hn` index.
   const filter = buildFilter(q, from, to, by, type, {
     phraseBoost: sort === "relevance",
+    scope: onJobsIndex ? undefined : scope,
   });
-  const args: (string | number)[] = [
-    "search.query",
-    "hn",
-    JSON.stringify(filter),
-    "LIMIT",
-    limit,
-  ];
+  const options: SearchOptions = { filter, limit };
+  if (offset) options.offset = offset;
   if (sort !== "relevance") {
+    // `ndesc` doesn't exist on `hnjobs`; its discussion field is `replies`. Both
+    // indexes have `score` and `time`, so those sorts map straight through.
+    const discussField = onJobsIndex ? "replies" : "ndesc";
     const field =
-      sort === "score" ? "score" : sort === "recent" ? "time" : "ndesc";
-    args.push("ORDERBY", field, "DESC");
+      sort === "score" ? "score" : sort === "recent" ? "time" : discussField;
+    options.orderBy = { [field]: "DESC" };
   } else if (q.trim()) {
-    // Hybrid ranking: BM25 + upvote + comment signals, SUMmed onto the text
-    // relevance (SCOREMODE sum) and combined with each other (COMBINEMODE sum).
-    // Without any signal, plain BM25 ranks five different posts literally titled
-    // "Bitcoin" (1-2 upvotes each) above the well-discussed ones. log1p has
-    // diminishing returns so a 1000-upvote story isn't ~100x a 10-upvote one,
-    // and SUM keeps low-score comments visible (they fall back to BM25 + their
-    // comment count). Mutually exclusive with ORDERBY, so we skip it when the
-    // user picked a different sort. Only `.fast()` numeric fields work here, and
-    // both `score` and `ndesc` are indexed that way.
-    args.push(
-      "SCOREFUNC",
-      "SCOREMODE",
-      "sum",
-      "COMBINEMODE",
-      "sum",
-      "FIELDVALUE",
-      "score",
-      "MODIFIER",
-      "log1p",
-      "FACTOR",
-      POINTS_FACTOR,
-      "FIELDVALUE",
-      "ndesc",
-      "MODIFIER",
-      "log1p",
-      "FACTOR",
-      COMMENTS_FACTOR,
-    );
+    // Hybrid ranking: BM25 + signal fields, SUMmed onto the text relevance
+    // (scoreMode sum) and combined with each other (combineMode sum). Without a
+    // signal, plain BM25 ranks five different posts literally titled "Bitcoin"
+    // (1-2 upvotes each) above the well-discussed ones. log1p has diminishing
+    // returns so a 1000-upvote story isn't ~100x a 10-upvote one, and sum keeps
+    // low-score docs visible. Mutually exclusive with orderBy. Only `.fast()`
+    // numeric fields work here.
+    const fields = onJobsIndex
+      ? // Postings have no upvotes; the discussion signal is the precomputed
+        // direct-reply count. This is exactly `relevance + log1p(replies)`.
+        [{ field: "replies", modifier: "log1p" as const, factor: REPLIES_FACTOR }]
+      : // Shared index: upvotes lead, comments fill in.
+        [
+          { field: "score", modifier: "log1p" as const, factor: POINTS_FACTOR },
+          { field: "ndesc", modifier: "log1p" as const, factor: COMMENTS_FACTOR },
+        ];
+    options.scoreFunc = { fields, combineMode: "sum", scoreMode: "sum" };
   }
-  return args;
+  return { index, options };
 }
 
-export type AggregateArgsOpts = { q: string; from?: string; to?: string };
+export type AggregateArgsOpts = {
+  q: string;
+  from?: string;
+  to?: string;
+  scope?: Scope;
+  /** Which index to aggregate against. Defaults to `hn`; `hnjobs` is the
+   *  dedicated postings index (already scoped to job postings, far smaller than
+   *  the all-of-HN `hn` index, so the same histogram runs ~3x faster). When it's
+   *  `hnjobs` the `scope=jobs` parent `$or` is dropped (redundant + slow there),
+   *  exactly like `buildSearchOptions` does. */
+  index?: SearchIndex;
+};
 
 /** The date-histogram + facet aggregations powering the trend chart. Shared by
  *  the raw-command builder and the SDK snippet so they can't drift. */
@@ -237,16 +326,31 @@ const AGGREGATIONS = {
   by_type: { $terms: { field: "type", size: 4 } },
 } as const;
 
-/** Build the SEARCH.AGGREGATE command args (everything after the verb). */
-export function buildAggregateArgs(opts: AggregateArgsOpts): (string | number)[] {
-  const { q, from, to } = opts;
-  const filter = buildFilter(q, from, to);
-  return [
-    "search.aggregate",
-    "hn",
-    JSON.stringify(filter),
-    JSON.stringify(AGGREGATIONS),
-  ];
+/** The SDK `aggregate({...})` option object (everything after the index). */
+export type AggregateOptions = {
+  filter: Record<string, unknown>;
+  aggregations: typeof AGGREGATIONS;
+};
+
+/**
+ * Build the SDK `aggregate()` options. Returns the chosen index plus the option
+ * object passed straight to `redis.search.index({ name }).aggregate()`. Single
+ * source of truth for the aggregate shape: `hn-index.ts` runs it and
+ * `aggregateSnippet` renders it.
+ */
+export function buildAggregateOptions(
+  opts: AggregateArgsOpts,
+): { index: SearchIndex; options: AggregateOptions } {
+  const { q, from, to, scope, index = DEFAULT_INDEX } = opts;
+  const onJobsIndex = index === JOBS_INDEX;
+  // The `hnjobs` index already contains ONLY postings, so the scope=jobs parent
+  // arm is redundant there (and its ~180-id $or would just slow the filter).
+  // Drop it on that index; keep it for the shared `hn` index. Mirrors what
+  // `buildSearchOptions` does for the search path.
+  const filter = buildFilter(q, from, to, undefined, undefined, {
+    scope: onJobsIndex ? undefined : scope,
+  });
+  return { index, options: { filter, aggregations: AGGREGATIONS } };
 }
 
 /* ---------- SDK code snippets (for the "show the code" panel) -------- */
@@ -324,36 +428,20 @@ function fmtKey(k: string): string {
   return /^[A-Za-z_$][\w$]*$/.test(k) ? k : JSON.stringify(k);
 }
 
-/** The `hn.query({...})` SDK call equivalent to `buildSearchArgs(opts)`. */
+/** The `hn.query({...})` SDK call - rendered from the SAME `buildSearchOptions`
+ *  the app executes, so the panel can't drift from the real query. We render the
+ *  shared-`hn` form (default index) regardless of which index actually ran, so
+ *  the panel always shows the upvote+comment ranking readers expect. */
 export function searchSnippet(opts: SearchArgsOpts): string {
-  const { q, sort, limit = 30, from, to, by, type } = opts;
-  const options: Record<string, unknown> = {
-    filter: buildFilter(q, from, to, by, type, {
-      phraseBoost: sort === "relevance",
-    }),
-    limit,
-  };
-  let note = "";
-  if (sort !== "relevance") {
-    const field =
-      sort === "score" ? "score" : sort === "recent" ? "time" : "ndesc";
-    options.orderBy = { [field]: "DESC" };
-  } else if (q.trim()) {
-    // Same hybrid rank as buildSearchArgs: BM25 + upvote + comment signals.
-    options.scoreFunc = {
-      fields: [
-        { field: "score", modifier: "log1p", factor: POINTS_FACTOR },
-        { field: "ndesc", modifier: "log1p", factor: COMMENTS_FACTOR },
-      ],
-      combineMode: "sum",
-      scoreMode: "sum",
-    };
-    note = "// rank by relevance, boosted by upvotes + comments\n";
-  }
+  const { options } = buildSearchOptions({ ...opts, scope: undefined, index: DEFAULT_INDEX });
+  const note =
+    opts.sort === "relevance" && opts.q.trim()
+      ? "// rank by relevance, boosted by upvotes + comments\n"
+      : "";
   // Annotate the scoreFunc block with the one-line formula it encodes, keeping
   // the leading whitespace ($1) so the comment lines up with the key it sits on.
   let body = fmtJs(options);
-  if (sort === "relevance" && q.trim()) {
+  if (opts.sort === "relevance" && opts.q.trim()) {
     body = body.replace(
       /(\n\s*)scoreFunc:/,
       `$1// finalScore = relevance + ${POINTS_FACTOR}*log1p(points) + ${COMMENTS_FACTOR}*log1p(comments)$1scoreFunc:`,
@@ -362,9 +450,9 @@ export function searchSnippet(opts: SearchArgsOpts): string {
   return (
     `const hn = redis.search.index({ name: "hn", schema });\n\n` +
     note +
-    `const { documents } = await hn.query(${body});\n\n` +
+    `const documents = await hn.query(${body});\n\n` +
     `// type-safe\n` +
-    `documents[0].title;`
+    `documents[0].data.title;`
   );
 }
 
@@ -394,16 +482,42 @@ export function histogramSnippet(term: string): string {
   );
 }
 
-/** The `hn.aggregate({...})` SDK call equivalent to `buildAggregateArgs`. */
-export function aggregateSnippet(opts: AggregateArgsOpts): string {
-  const { q, from, to } = opts;
-  const options = {
-    filter: buildFilter(q, from, to),
-    aggregations: AGGREGATIONS,
-  };
+/** The histogram behind the /who-is-hiring chart: the same date-histogram as
+ *  above, but the filter ANDs in the "job postings" scope - comments whose
+ *  parent is one of the monthly "Who is hiring?" threads. The ~180 thread ids
+ *  are shown as a named list rather than inlined, since that's how you'd
+ *  actually write it (and matches what scripts/ingest-jobs.ts produces). */
+export function jobsHistogramSnippet(term: string): string {
+  // Print just the term arm via fmtJs so it can't drift from buildFilter, then
+  // hand-assemble the readable scope arm around it.
+  const termArm = fmtJs({ $or: [{ title: { $eq: term } }, { text: { $eq: term } }] }, 3);
   return (
     `const hn = redis.search.index({ name: "hn", schema });\n\n` +
-    `const { aggregations } = await hn.aggregate(${fmtJs(options)});`
+    `// the monthly "Ask HN: Who is hiring?" threads (one per month since 2011)\n` +
+    `const HIRING_THREADS = [2396027, 2503204, /* …180 more… */];\n\n` +
+    `// per month, count the job postings that mention the term\n` +
+    `const { aggregations } = await hn.aggregate({\n` +
+    `  filter: {\n` +
+    `    $and: [\n` +
+    `      ${termArm},\n` +
+    `      { $or: HIRING_THREADS.map((id) => ({ parent: id })) },\n` +
+    `    ],\n` +
+    `  },\n` +
+    `  aggregations: {\n` +
+    `    by_month: { $dateHistogram: { field: "time", fixedInterval: "30d" } },\n` +
+    `  },\n` +
+    `});`
+  );
+}
+
+/** The `hn.aggregate({...})` SDK call - rendered from the SAME
+ *  `buildAggregateOptions` the app executes. We render the shared-`hn` form
+ *  (default index, no scope arm) so the panel shows the simplest aggregate. */
+export function aggregateSnippet(opts: AggregateArgsOpts): string {
+  const { options } = buildAggregateOptions({ ...opts, scope: undefined, index: DEFAULT_INDEX });
+  return (
+    `const hn = redis.search.index({ name: "hn", schema });\n\n` +
+    `const aggregations = await hn.aggregate(${fmtJs(options)});`
   );
 }
 
@@ -438,97 +552,71 @@ await redis.search.createIndex({
   }),
 });`;
 
-/** URL-encode command args into an Upstash REST path. */
-export function encodePath(parts: (string | number)[]): string {
-  return parts.map((p) => encodeURIComponent(String(p))).join("/");
-}
-
-/**
- * Build the command args from request query params (`?op=&q=&sort=&…`). Used by
- * the live `/api/hn` edge proxy so the wire contract (and the resulting Redis
- * command) is defined in one place.
+/* ---------- SDK return-shape mappers ------------------------------- */
+/*
+ * The SDK parses Upstash's responses for us, so these mappers take already-
+ * structured objects (not the raw REST kv-arrays the old parsers handled):
+ *   query()     -> Array<{ key, score, data }>   (data has typed fields)
+ *   aggregate() -> { by_month: { buckets:[{ key, keyAsString, docCount }] },
+ *                    top_authors: { buckets:[{ key, docCount }], ... },
+ *                    by_type:     { buckets:[{ key, docCount }], ... } }
+ * We just project those onto the app's `HnDoc` / `Aggregations` types and coerce
+ * the numeric fields (the SDK already returns them as numbers; we coerce
+ * defensively so a missing field is 0, not NaN).
  */
-export function argsFromParams(p: URLSearchParams): (string | number)[] {
-  const op = (p.get("op") as "search" | "aggregate") ?? "search";
-  const q = p.get("q") ?? "";
-  const from = p.get("from") ?? undefined;
-  const to = p.get("to") ?? undefined;
-  if (op === "aggregate") return buildAggregateArgs({ q, from, to });
-  return buildSearchArgs({
-    q,
-    sort: (p.get("sort") as SortMode) ?? "relevance",
-    limit: p.get("limit") ? Number(p.get("limit")) : undefined,
-    from,
-    to,
-    by: p.get("by") ?? undefined,
-    type: p.get("type") ?? undefined,
-  });
-}
 
-/* ---------- response parsing --------------------------------------- */
+/** One SDK query row: the document key, its BM25/score, and the field data. */
+type QueryRow = { key: string; score: number; data: Record<string, unknown> };
 
-export function parseDocs(raw: unknown): HnDoc[] {
-  if (!Array.isArray(raw)) return [];
+/** Map the SDK's `query()` rows onto `HnDoc[]`. The row's `score` is the BM25
+ *  (relevance/scoreFunc/orderBy) value, surfaced as `_score`; the field values
+ *  come from `data`. */
+export function mapDocs(rows: unknown): HnDoc[] {
+  if (!Array.isArray(rows)) return [];
   const out: HnDoc[] = [];
-  for (const row of raw as Array<[string, string, Array<[string, string]>]>) {
-    const fields = row[2];
-    const obj: Record<string, string | number> = { _score: parseFloat(row[1]) };
-    for (const [k, v] of fields) obj[k] = v;
-    obj.score = Number(obj.score ?? 0);
-    obj.ndesc = Number(obj.ndesc ?? 0);
-    obj.id = Number(obj.id ?? 0);
-    if (obj.parent !== undefined) obj.parent = Number(obj.parent);
+  for (const row of rows as QueryRow[]) {
+    const d = row?.data ?? {};
+    const obj: Record<string, unknown> = { ...d, _score: Number(row?.score ?? 0) };
+    obj.score = Number(d.score ?? 0);
+    obj.ndesc = Number(d.ndesc ?? 0);
+    obj.id = Number(d.id ?? 0);
+    if (d.parent !== undefined) obj.parent = Number(d.parent);
+    // `hnjobs` docs carry the precomputed direct-reply count; coerce it when the
+    // field is present so the drill-down ranking can read a real number.
+    if (d.replies !== undefined) obj.replies = Number(d.replies);
     out.push(obj as unknown as HnDoc);
   }
   return out;
 }
 
-/**
- * SEARCH.AGGREGATE returns a flat key/value-pair array. Each value is itself
- * either a kv-array or an object, recursively.
- */
-function kvArrayToObj(v: unknown): Record<string, unknown> {
-  if (Array.isArray(v)) {
-    const o: Record<string, unknown> = {};
-    for (let i = 0; i < v.length; i += 2) o[String(v[i])] = v[i + 1];
-    return o;
-  }
-  if (v && typeof v === "object") return v as Record<string, unknown>;
-  return {};
+/** A single `$dateHistogram` / `$terms` bucket as the SDK returns it. */
+type SdkBucket = { key: unknown; keyAsString?: unknown; docCount?: unknown };
+
+function mapDateBuckets(node: unknown): Bucket[] {
+  const buckets = (node as { buckets?: unknown })?.buckets;
+  if (!Array.isArray(buckets)) return [];
+  return (buckets as SdkBucket[]).map((b) => ({
+    key: Number(b.key),
+    keyAsString: String(b.keyAsString ?? ""),
+    docCount: Number(b.docCount ?? 0),
+  }));
 }
 
-export function parseAggregations(raw: unknown): Aggregations {
-  const empty: Aggregations = { buckets: [], topAuthors: [], byType: [] };
-  const top = kvArrayToObj(raw);
-  if (!Object.keys(top).length) return empty;
+function mapTermBuckets(node: unknown): { key: string; docCount: number }[] {
+  const buckets = (node as { buckets?: unknown })?.buckets;
+  if (!Array.isArray(buckets)) return [];
+  return (buckets as SdkBucket[]).map((b) => ({
+    key: String(b.key),
+    docCount: Number(b.docCount ?? 0),
+  }));
+}
 
-  function parseBuckets(node: unknown): Bucket[] {
-    const o = kvArrayToObj(node);
-    const buckets = o.buckets;
-    if (!Array.isArray(buckets)) return [];
-    return buckets.map((b) => {
-      const bo = kvArrayToObj(b);
-      return {
-        key: Number(bo.key),
-        keyAsString: String(bo.keyAsString ?? ""),
-        docCount: Number(bo.docCount ?? 0),
-      };
-    });
-  }
-
-  function parseTerms(node: unknown): { key: string; docCount: number }[] {
-    const o = kvArrayToObj(node);
-    const buckets = o.buckets;
-    if (!Array.isArray(buckets)) return [];
-    return buckets.map((b) => {
-      const bo = kvArrayToObj(b);
-      return { key: String(bo.key), docCount: Number(bo.docCount ?? 0) };
-    });
-  }
-
+/** Map the SDK's structured `aggregate()` result onto `Aggregations`. */
+export function mapAggregations(agg: unknown): Aggregations {
+  const a = (agg ?? {}) as Record<string, unknown>;
   return {
-    buckets: parseBuckets(top.by_month),
-    topAuthors: parseTerms(top.top_authors),
-    byType: parseTerms(top.by_type),
+    buckets: mapDateBuckets(a.by_month),
+    topAuthors: mapTermBuckets(a.top_authors),
+    byType: mapTermBuckets(a.by_type),
   };
 }

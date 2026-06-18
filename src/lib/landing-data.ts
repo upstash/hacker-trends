@@ -13,44 +13,20 @@
  * Server-only (reads the Upstash token); never import from a "use client" file.
  */
 
-import {
-  buildAggregateArgs,
-  buildSearchArgs,
-  parseAggregations,
-  parseDocs,
-  type HnDoc,
-} from "@/lib/hn-query";
+import { hnRedis, runAggregate, runSearch } from "@/lib/hn-index";
 import { getExamplesData, type MonthCount } from "@/lib/examples-data";
+import { type HnDoc } from "@/lib/hn-query";
 
-const URL_ENDPOINT = process.env.UPSTASH_REDIS_REST_URL;
-const TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
+const HAS_CREDS = !!(
+  process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN
+);
 
-/** One Redis command over the Upstash REST command-array endpoint; null on any
- *  failure so a missing backend degrades to an empty page section, never a
- *  crash. (Mirrors the best-effort helper in examples-data.ts.) */
-async function redisCommand<T>(cmd: (string | number)[]): Promise<T | null> {
-  if (!URL_ENDPOINT || !TOKEN) return null;
-  try {
-    const r = await fetch(URL_ENDPOINT, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${TOKEN}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(cmd),
-      cache: "no-store",
-    });
-    if (!r.ok) return null;
-    const j = (await r.json()) as { result?: T; error?: string };
-    if (j.error) return null;
-    return (j.result ?? null) as T | null;
-  } catch {
-    return null;
-  }
-}
+/** The SDK client (env-driven), or null when creds are missing so a missing
+ *  backend degrades to an empty page section, never a crash. */
+const redis = HAS_CREDS ? hnRedis() : null;
 
 /** A term's monthly histogram: prefer the shared examples cache (one GET for
- *  the whole catalog), fall back to a live aggregate for off-catalog terms. */
+ *  the whole catalog), fall back to a live SDK aggregate for off-catalog terms. */
 async function bucketsFor(term: string): Promise<MonthCount[]> {
   try {
     const examples = await getExamplesData();
@@ -59,20 +35,24 @@ async function bucketsFor(term: string): Promise<MonthCount[]> {
   } catch {
     // fall through to live
   }
-  const raw = await redisCommand<unknown>(buildAggregateArgs({ q: term }));
-  return parseAggregations(raw).buckets.map((b) => ({
-    key: b.key,
-    docCount: b.docCount,
-  }));
+  if (!redis) return [];
+  try {
+    const agg = await runAggregate(redis, { q: term });
+    return agg.buckets.map((b) => ({ key: b.key, docCount: b.docCount }));
+  } catch {
+    return [];
+  }
 }
 
 /** Top stories for a term, by upvotes - the headline list a landing page shows.
  *  `type: "story"` so comments don't crowd out the front-page-able items. */
 async function topStories(term: string, limit = 12): Promise<HnDoc[]> {
-  const raw = await redisCommand<unknown>(
-    buildSearchArgs({ q: term, sort: "score", limit, type: "story" }),
-  );
-  return parseDocs(raw ?? []);
+  if (!redis) return [];
+  try {
+    return await runSearch(redis, { q: term, sort: "score", limit, type: "story" });
+  } catch {
+    return [];
+  }
 }
 
 export type TermStats = {

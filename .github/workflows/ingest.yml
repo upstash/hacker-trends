@@ -77,3 +77,40 @@ jobs:
           else
             echo "Not a month boundary (day $DAY); nothing to finalize."
           fi
+
+      - name: Refresh the dedicated hnjobs postings index (current month)
+        # Sibling step: after the shared `hn` index has the current month, rebuild
+        # the dedicated `hnjobs` postings index for that same month so the
+        # drill-down's reply counts stay current (the open "Who is hiring?" thread
+        # keeps gaining postings + replies all month). ingest-jobs.ts reads the
+        # just-refreshed postings out of `hn`, computes each posting's
+        # direct-children reply count in one batched pass, and HSETs them into
+        # `hnjob:*` (idempotent). It needs the same WRITABLE token as the steps
+        # above. A single recent month is cheap (a few seconds); the full history
+        # only changes when a whole past month is re-finalized.
+        run: |
+          set -euo pipefail
+          YEAR="${{ inputs.year }}"
+          MONTH="${{ inputs.month }}"
+          [ -z "$YEAR" ]  && YEAR="$(date -u +%Y)"
+          [ -z "$MONTH" ] && MONTH="$(date -u +%m)"
+          # ingest-jobs.ts addresses months as zero-padded "YYYY-MM".
+          MONTH="$(printf '%02d' "$((10#$MONTH))")"
+          echo "Refreshing hnjobs for $YEAR-$MONTH"
+          bun scripts/ingest-jobs.ts "$YEAR-$MONTH"
+
+      - name: Finalize hnjobs for the previous month at the month boundary
+        # Same month-boundary logic as the `hn` finalize above: once last month is
+        # closed out in `hn`, rebuild its `hnjobs` slice once so its final replies
+        # are captured. Schedule-only.
+        if: ${{ github.event_name == 'schedule' }}
+        run: |
+          set -euo pipefail
+          DAY="$(date -u +%d)"
+          if [ "$DAY" = "01" ] || [ "$DAY" = "02" ]; then
+            PYM="$(date -u -d "$(date -u +%Y-%m-01) -1 day" +%Y-%m)"
+            echo "Month boundary: finalizing hnjobs for $PYM"
+            bun scripts/ingest-jobs.ts "$PYM"
+          else
+            echo "Not a month boundary (day $DAY); nothing to finalize for hnjobs."
+          fi

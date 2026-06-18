@@ -1,18 +1,33 @@
 /**
- * Live search/aggregate endpoint for the app: a thin Vercel Edge proxy in
- * front of Upstash Redis Search.
+ * Live search/aggregate endpoint for the app: a thin Vercel Edge function in
+ * front of Upstash Redis Search, driven by the official `@upstash/redis` search
+ * SDK (`redis.search.index({ name }).query(...)` / `.aggregate(...)`).
  *
  * The ~600ms Upstash query dominates total latency, so a browser-direct call
  * and an edge hop are a latency wash; we run on the Edge because it ties
  * browser-direct while keeping the Upstash credential server-side and giving
- * us one place to add caching later.
+ * us one place to cache. `@upstash/redis` is fetch-based and edge-compatible,
+ * so the SDK runs here unchanged.
  *
- * It runs the byte-identical command the browser used to build (via the shared
- * `argsFromParams`) and passes Upstash's JSON body straight back through, so
- * the client keeps its existing `{ result } | { error }` parsing.
+ * It runs the byte-equivalent query the browser asks for (built from the shared
+ * `hn-query.ts` option builders), maps the SDK's parsed result onto the app's
+ * `HnDoc[]` / `Aggregations` types, and returns the ALREADY-PARSED payload in
+ * the same `{ result } | { error }` envelope the client already expects - so
+ * the browser just reads `result` (no more raw REST parsing client-side).
  */
 
-import { argsFromParams, encodePath } from "@/lib/hn-query";
+import {
+  runAggregate,
+  runSearch,
+  resolveThreadRoot,
+  hnRedis,
+} from "@/lib/hn-index";
+import {
+  DEFAULT_INDEX,
+  type Scope,
+  type SearchIndex,
+  type SortMode,
+} from "@/lib/hn-query";
 
 export const runtime = "edge";
 // NOTE: intentionally NOT pinning preferredRegion. This is a global app, so the
@@ -28,7 +43,16 @@ export const runtime = "edge";
 // ~600ms Upstash query into a ~50ms CDN hit for every repeat of a given query
 // (and the popular gallery terms are shared across all visitors). This is the
 // single biggest latency win; the query itself dominates and caching skips it.
-const SEARCH_CACHE = "public, s-maxage=3600, stale-while-revalidate=86400";
+//
+// `max-age=300` ALSO lets each viewer's OWN browser cache hold the response, so
+// re-hovering / re-clicking the SAME (term, month) bar in the drill-down is an
+// instant browser-cache hit (0ms, no network) rather than a fresh ~200ms Upstash
+// round-trip. The deterministic per-(term,month) URL is the cache key; a short
+// browser TTL keeps a single session snappy while the CDN's longer `s-maxage`
+// (+ SWR) still absorbs the cross-visitor repeats. The client must NOT send
+// `cache: no-store` for this to bite (see hn-search.ts).
+const SEARCH_CACHE =
+  "public, max-age=300, s-maxage=3600, stale-while-revalidate=86400";
 
 // Server-side read-only Upstash credentials. These live only on the server and
 // never reach the browser; the client talks exclusively to this edge route,
@@ -39,69 +63,61 @@ const TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN!;
 
 export async function GET(req: Request) {
   if (!URL_ENDPOINT || !TOKEN) {
-    return json(
-      { error: "Missing Upstash credentials on the server" },
-      500,
-    );
+    return json({ error: "Missing Upstash credentials on the server" }, 500);
   }
 
   const params = new URL(req.url).searchParams;
-
-  // `op=thread`: resolve the root story a comment hangs under, so the result
-  // list can label it `on thread "<title>"`. Our index stores only each item's
-  // immediate `parent`, so we walk parents up to the story - a few HGETs deep
-  // at most - all against the same Upstash index (no external HN API).
-  if (params.get("op") === "thread") return resolveThread(params.get("id"));
-
-  const path = encodePath(argsFromParams(params));
+  const redis = hnRedis({ url: URL_ENDPOINT, token: TOKEN });
 
   try {
-    const r = await fetch(`${URL_ENDPOINT}/${path}`, {
-      headers: { Authorization: `Bearer ${TOKEN}` },
-      cache: "no-store",
-    });
-    // Pass Upstash's body straight through ({ result } | { error }). A given
+    // `op=thread`: resolve the root story a comment hangs under, so the result
+    // list can label it `on thread "<title>"`. Our index stores only each
+    // item's immediate `parent`, so the helper HMGETs up the parent chain to
+    // the story - a few hops at most - all against the same Upstash index.
+    if (params.get("op") === "thread") {
+      const id = params.get("id");
+      if (!id) return json({ error: "missing id" }, 400);
+      const root = await resolveThreadRoot(redis, id);
+      return json({ result: root }, 200, SEARCH_CACHE);
+    }
+
+    const op = (params.get("op") as "search" | "aggregate") ?? "search";
+    const q = params.get("q") ?? "";
+    const from = params.get("from") ?? undefined;
+    const to = params.get("to") ?? undefined;
+    // Only `jobs` is a valid scope today; anything else is treated as no scope.
+    const scope: Scope = params.get("scope") === "jobs" ? "jobs" : undefined;
+    // Only `hnjobs` is a valid alternate index today; anything else is the
+    // default shared `hn` index. The chart/gallery aggregates AND the drill-down
+    // send `index=hnjobs` once that index is populated, falling back to `hn`
+    // (scope=jobs) otherwise.
+    const index: SearchIndex =
+      params.get("index") === "hnjobs" ? "hnjobs" : DEFAULT_INDEX;
+
+    // Run the SDK query/aggregate and return the ALREADY-PARSED payload. A given
     // (op,q,sort,range,…) URL is deterministic, so let the CDN cache the OK
-    // responses (see SEARCH_CACHE); never cache an error, or a transient Upstash
-    // blip would stick for the whole TTL.
-    return new Response(await r.text(), {
-      status: r.status,
-      headers: {
-        "content-type": "application/json",
-        "cache-control": r.ok ? SEARCH_CACHE : "no-store, max-age=0",
-      },
+    // responses (see SEARCH_CACHE); the catch below never caches an error, so a
+    // transient Upstash blip can't stick for the whole TTL.
+    if (op === "aggregate") {
+      const result = await runAggregate(redis, { q, from, to, scope, index });
+      return json({ result }, 200, SEARCH_CACHE);
+    }
+
+    const result = await runSearch(redis, {
+      q,
+      sort: (params.get("sort") as SortMode) ?? "relevance",
+      limit: params.get("limit") ? Number(params.get("limit")) : undefined,
+      from,
+      to,
+      by: params.get("by") ?? undefined,
+      type: params.get("type") ?? undefined,
+      scope,
+      index,
     });
+    return json({ result }, 200, SEARCH_CACHE);
   } catch (e) {
     return json({ error: (e as Error).message }, 502);
   }
-}
-
-/**
- * Walk a comment's parent chain in the Upstash index until we reach the story
- * it belongs to, returning `{ id, title }` for that story. Bounded to a handful
- * of hops (HN threads are shallow) and tolerant of gaps - a dead/missing
- * ancestor (we don't index dead items) just ends the walk with what we have.
- */
-async function resolveThread(startId: string | null): Promise<Response> {
-  if (!startId) return json({ error: "missing id" }, 400);
-  const headers = { Authorization: `Bearer ${TOKEN}` };
-  let id = startId;
-  for (let hop = 0; hop < 12 && id && id !== "0"; hop++) {
-    const r = await fetch(`${URL_ENDPOINT}/HMGET/hn:${id}/title/type/parent`, {
-      headers,
-      cache: "no-store",
-    });
-    if (!r.ok) break;
-    const j = (await r.json()) as { result?: (string | null)[] };
-    const [title, type, parent] = j.result ?? [];
-    // A story (or any item carrying a real title) is the thread root.
-    if (type === "story" || (title && title.length > 0)) {
-      return json({ result: { id: Number(id), title } }, 200, SEARCH_CACHE);
-    }
-    if (!parent || parent === "0") break;
-    id = parent;
-  }
-  return json({ result: { id: null, title: null } }, 200, SEARCH_CACHE);
 }
 
 function json(body: unknown, status: number, cacheControl = "no-store"): Response {

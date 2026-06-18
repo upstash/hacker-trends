@@ -27,7 +27,12 @@ import { JsonLd } from "@/app/components/JsonLd";
 import { LandingHeader, LandingFooter } from "@/app/components/LandingChrome";
 import { OutboundLink } from "@/app/components/OutboundLink";
 
-export const revalidate = 86400;
+// Rendered on demand from live Upstash Redis Search (via the `@upstash/redis`
+// SDK), then CDN-cached - we don't prerender at build time (the index refreshes
+// out of band, and prerendering every slug would fan out hundreds of SDK queries
+// during the build). Matches the prior `fetch(..., {cache:"no-store"})` behavior
+// that already kept this route dynamic.
+export const dynamic = "force-dynamic";
 export const dynamicParams = true;
 
 const COMPARE_COLORS = ["#1f6feb", "#ff6600", "#1a7f37", "#cf222e", "#8250df"];

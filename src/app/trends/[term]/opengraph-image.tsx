@@ -6,6 +6,10 @@ import { SLOTS, slotOf } from "@/lib/trend-time";
 export const alt = "Hacker News mention trend";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
+// Drawn from live Upstash Redis Search (via the `@upstash/redis` SDK), so render
+// on demand and let the CDN cache the PNG - don't prerender every term's image at
+// build time (matches the prior `cache:"no-store"` data-layer behavior).
+export const dynamic = "force-dynamic";
 
 const BARS = 96;
 

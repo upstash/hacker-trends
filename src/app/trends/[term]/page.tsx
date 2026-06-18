@@ -34,9 +34,14 @@ import { JsonLd } from "@/app/components/JsonLd";
 import { LandingHeader, LandingFooter } from "@/app/components/LandingChrome";
 import { OutboundLink } from "@/app/components/OutboundLink";
 
-// ISR: built once, refreshed daily. Catalog terms are prebuilt; anything else
-// renders on demand and is then cached.
-export const revalidate = 86400;
+// Rendered on demand from live Upstash Redis Search (via the `@upstash/redis`
+// SDK), then cached by the CDN. We do NOT prerender at build time: the index is
+// refreshed out of band so a build-time snapshot would go stale, and statically
+// generating every catalog term would fan out hundreds of SDK queries during the
+// build. `force-dynamic` renders each page on the first request and the response
+// is CDN-cached from there (this matches the prior behavior, where the data
+// layer's `fetch(..., {cache:"no-store"})` already kept these routes dynamic).
+export const dynamic = "force-dynamic";
 export const dynamicParams = true;
 
 export function generateStaticParams() {

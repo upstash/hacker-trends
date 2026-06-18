@@ -1,19 +1,20 @@
 /**
  * Browser client for the app's search/aggregate calls.
  *
- * Requests now go browser -> `/api/hn` (a Vercel Edge function) -> Upstash,
- * instead of browser -> Upstash directly. The Edge hop ties the old direct
- * path on latency (the ~600ms query dominates either way) while keeping the
- * Upstash token server-side. Command construction + response parsing live in
- * `hn-query.ts`; the edge route builds the same command from these params, so
- * the wire contract is just `?op=&q=&sort=&…`.
+ * Requests go browser -> `/api/hn` (a Vercel Edge function) -> Upstash, instead
+ * of browser -> Upstash directly. The Edge hop ties the old direct path on
+ * latency (the ~600ms query dominates either way) while keeping the Upstash
+ * token server-side. The edge route now runs the query through the
+ * `@upstash/redis` search SDK and returns the ALREADY-PARSED payload, so the
+ * client just reads `result` - no raw REST parsing here anymore. The query
+ * shape lives in `hn-query.ts`; the wire contract is just `?op=&q=&sort=&…`.
  */
 
 import {
-  parseAggregations,
-  parseDocs,
   type AggregateArgsOpts,
   type AggResponse,
+  type Aggregations,
+  type HnDoc,
   type SearchArgsOpts,
   type SearchResponse,
 } from "./hn-query";
@@ -34,8 +35,14 @@ async function callEdge<T>(params: Params, signal?: AbortSignal): Promise<T> {
   for (const [k, v] of Object.entries(params)) {
     if (v !== undefined && v !== "") sp.set(k, String(v));
   }
+  // A given `?op=&q=&sort=&from=&to=&index=…` URL is fully deterministic and the
+  // edge route returns it with a real `Cache-Control` (max-age for the browser,
+  // s-maxage for the CDN). So DON'T force `no-store`: use the default HTTP cache
+  // so re-hovering / re-clicking the SAME (term, month) is served straight from
+  // the browser cache - no network, no ~200ms Upstash round-trip - instead of
+  // refetching every time. Aborts still work (the cache lookup respects signal).
   const r = await fetch(`/api/hn?${sp.toString()}`, {
-    cache: "no-store",
+    cache: "default",
     signal,
   });
   if (!r.ok) throw new Error(`/api/hn -> ${r.status} ${await r.text()}`);
@@ -49,16 +56,17 @@ async function callEdge<T>(params: Params, signal?: AbortSignal): Promise<T> {
 export async function searchPosts(
   opts: SearchArgsOpts & { signal?: AbortSignal },
 ): Promise<SearchResponse> {
-  const { signal, q, sort, limit = 30, from, to, by, type } = opts;
+  const { signal, q, sort, limit = 30, from, to, by, type, scope, index } = opts;
   const t0 = performance.now();
-  const raw = await callEdge<unknown>(
-    { op: "search", q, sort, limit, from, to, by, type },
+  // The edge route returns the already-mapped HnDoc[].
+  const docs = await callEdge<HnDoc[]>(
+    { op: "search", q, sort, limit, from, to, by, type, scope, index },
     signal,
   );
   const latencyMs = performance.now() - t0;
   return {
-    total: Array.isArray(raw) ? raw.length : 0,
-    docs: parseDocs(raw),
+    total: Array.isArray(docs) ? docs.length : 0,
+    docs: docs ?? [],
     latencyMs,
   };
 }
@@ -68,9 +76,13 @@ export async function searchPosts(
 export async function aggregate(
   opts: AggregateArgsOpts & { signal?: AbortSignal },
 ): Promise<AggResponse> {
-  const { signal, q, from, to } = opts;
+  const { signal, q, from, to, scope, index } = opts;
   const t0 = performance.now();
-  const raw = await callEdge<unknown[]>({ op: "aggregate", q, from, to }, signal);
+  // The edge route returns the already-mapped Aggregations.
+  const agg = await callEdge<Aggregations>(
+    { op: "aggregate", q, from, to, scope, index },
+    signal,
+  );
   const latencyMs = performance.now() - t0;
-  return { ...parseAggregations(raw), latencyMs };
+  return { ...agg, latencyMs };
 }
