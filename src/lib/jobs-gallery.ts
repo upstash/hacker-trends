@@ -104,7 +104,17 @@ export const CATEGORY_CARDS: GalleryCard[] = [
 export const COMPARISONS: GalleryCard[] = [
   {
     title: "onsite vs remote vs hybrid",
-    terms: ["onsite", "remote", "hybrid"],
+    // OR-group each work-style with its near-synonyms so the early years aren't
+    // skewed by the tagging convention: before the "ONSITE/REMOTE/VISA" template
+    // took hold, onsite intent was written as "on site", "in office" or "in
+    // person", so bare "onsite" reads as ~0 pre-2015. Folding those in recovers
+    // that signal. (The index tokenizer treats "-" as a space, so "on-site" ==
+    // "on site"; one spelling covers both.)
+    terms: [
+      "onsite|on site|in office|in person",
+      "remote|wfh|work from home",
+      "hybrid",
+    ],
     story: "The defining shift in how companies hire: onsite leads a decade, remote erupts in 2021, hybrid emerges after.",
   },
   {
@@ -199,7 +209,15 @@ export const COMPARISONS: GalleryCard[] = [
   },
   {
     title: "AI wave vs crypto wave",
-    terms: ["ai|machine learning|llm", "blockchain|crypto|web3"],
+    // Drop the bare 2-letter token "ai": it floods on ".ai" company domains
+    // (thothmind.ai, rewind.ai, ...) and marketing copy ("AI-powered") rather
+    // than genuine ML-skill demand, so it over-counts the bucket. Concrete,
+    // unambiguous skill terms ("generative ai" is a precise phrase, unlike bare
+    // "ai") track the real hiring wave without the branding noise.
+    terms: [
+      "machine learning|deep learning|llm|generative ai|nlp",
+      "blockchain|crypto|web3",
+    ],
     story: "Two hype cycles head to head: the AI/ML bucket versus the blockchain/crypto bucket.",
   },
   {

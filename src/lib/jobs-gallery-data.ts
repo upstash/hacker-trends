@@ -39,7 +39,7 @@ export type MonthCount = { key: number; docCount: number };
  *  rewrites jobs-gallery.ts) naturally invalidates the cache, AND to the index
  *  the histograms are computed against - flipping NEXT_PUBLIC_JOBS_INDEX_READY
  *  recomputes against `hnjobs` instead of reusing the `hn`+scope values. */
-export const JOBS_GALLERY_VERSION = `v1-${GALLERY.length}-${drillIndex().index}`;
+export const JOBS_GALLERY_VERSION = `v2-${GALLERY.length}-${drillIndex().index}`;
 
 const HAS_CREDS = !!(
   process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN
@@ -82,12 +82,20 @@ const redis = HAS_CREDS ? hnRedis() : null;
 async function fetchBuckets(part: string): Promise<MonthCount[]> {
   if (!redis) return [];
   const { index, scope } = drillIndex();
-  try {
-    const agg = await runAggregate(redis, { q: part, scope, index });
-    return agg.buckets.map((b) => ({ key: b.key, docCount: b.docCount }));
-  } catch {
-    return [];
+  // Retry transient failures: a single flaky aggregate here used to return `[]`,
+  // which `compute` would then cache as a permanent zero for the part's 30-day
+  // TTL - exactly the bug that left "javascript vs typescript" rendering as one
+  // solid bar (js cached empty). Every gallery part is curated to have data, so
+  // an empty result is always a failure signal, never a real zero.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const agg = await runAggregate(redis, { q: part, scope, index });
+      return agg.buckets.map((b) => ({ key: b.key, docCount: b.docCount }));
+    } catch {
+      await new Promise((r) => setTimeout(r, 150 * (attempt + 1)));
+    }
   }
+  return []; // exhausted retries -> caller treats this part as missing, not zero
 }
 
 async function mapLimit<T, R>(
@@ -107,15 +115,26 @@ async function mapLimit<T, R>(
   return out;
 }
 
-async function compute(): Promise<JobsGalleryData> {
+async function compute(): Promise<{ data: JobsGalleryData; complete: boolean }> {
   const parts = allGalleryParts();
   const buckets = await mapLimit(parts, BUILD_CONCURRENCY, fetchBuckets);
   const map: Record<string, MonthCount[]> = {};
-  parts.forEach((p, i) => (map[p] = buckets[i]));
+  let complete = true;
+  parts.forEach((p, i) => {
+    // OMIT a part that came back empty rather than storing `[]`: the client's
+    // `lookupPart` then returns undefined, so the card falls back to a live
+    // per-card aggregate (which renders correctly) instead of drawing a false
+    // zero. `complete` stays false so this partial build is NOT cached.
+    if (buckets[i].length > 0) map[p] = buckets[i];
+    else complete = false;
+  });
   return {
-    version: JOBS_GALLERY_VERSION,
-    generatedAt: new Date().toISOString(),
-    terms: map,
+    data: {
+      version: JOBS_GALLERY_VERSION,
+      generatedAt: new Date().toISOString(),
+      terms: map,
+    },
+    complete,
   };
 }
 
@@ -141,8 +160,12 @@ export async function getJobsGalleryData(opts?: {
       // fall through to recompute on a missing/corrupt/legacy value
     }
   }
-  const data = await compute();
-  if (redis) {
+  const { data, complete } = await compute();
+  // Only persist a COMPLETE build. Caching a partial one (some part still empty
+  // after retries) would freeze that gap for the 30-day TTL; skipping the write
+  // lets the next request recompute and self-heal, while this response still
+  // serves every part that did resolve (the rest fall back to live per card).
+  if (redis && complete) {
     try {
       await redis.set(CACHE_KEY, JSON.stringify(data), { ex: CACHE_TTL_SECONDS });
     } catch {
