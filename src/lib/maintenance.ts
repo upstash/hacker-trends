@@ -11,7 +11,7 @@
  *
  * Flip back to `false` (one line) once the database is healthy.
  */
-export const QUERYING_DISABLED = true;
+export const QUERYING_DISABLED = false;
 
 /** Neutral, no-error copy shown wherever live querying would have run. */
 export const QUERYING_DISABLED_LABEL = "querying is disabled";
