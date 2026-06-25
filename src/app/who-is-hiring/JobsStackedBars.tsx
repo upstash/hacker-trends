@@ -77,6 +77,9 @@ type Props = {
    *  where "share of voice" is always a flat 100% band (meaningless with one
    *  series), so the chart shows raw counts only and drops the toggle. */
   hideShareToggle?: boolean;
+  /** Render a year-tick x-axis under the bars. Opt-in so only the main
+   *  who-is-hiring chart gets it (the small landing/example charts stay bare). */
+  showYearAxis?: boolean;
   onHover?: (hit: SegmentHit) => void;
   onSelect?: (hit: SegmentHit) => void;
   /** Optionally drive the latched/pinned segment from the parent (it already
@@ -95,6 +98,7 @@ function JobsStackedBarsInner({
   normalized,
   onToggleNormalized,
   hideShareToggle,
+  showYearAxis,
   onHover,
   onSelect,
   selected,
@@ -119,6 +123,23 @@ function JobsStackedBarsInner({
     [columns],
   );
   const anyData = useMemo(() => columns.some((c) => c.total > 0), [columns]);
+
+  // Year-tick x-axis (opt-in via `showYearAxis`). Mark the FIRST column of each
+  // calendar year as a tick, then thin to at most ~12 labels so the longest
+  // window ("all", ~15 years) and a narrow phone never crowd. Each kept index
+  // gets a left-aligned year label in a row that mirrors the bar columns 1:1.
+  const yearTicks = useMemo(() => {
+    const starts: number[] = [];
+    columns.forEach((c, ci) => {
+      if (ci === 0 || columns[ci - 1].year !== c.year) starts.push(ci);
+    });
+    const stride = Math.max(1, Math.ceil(starts.length / 12));
+    const show = new Set<number>();
+    starts.forEach((ci, i) => {
+      if (i % stride === 0) show.add(ci);
+    });
+    return show;
+  }, [columns]);
 
   const hitFor = (ci: number, si: number): SegmentHit => {
     const c = columns[ci];
@@ -282,6 +303,27 @@ function JobsStackedBarsInner({
           </div>
         )}
       </div>
+
+      {/* x-axis: year ticks. A row that mirrors the bar columns 1:1 (same px-3 +
+          flex-grow-per-column), so each label lands flush-left under the first
+          bar of its year. Only the main chart opts in via `showYearAxis`. */}
+      {showYearAxis && anyData && !loading && (
+        <div className="jobs-axis flex select-none px-3 pb-2 text-[10px] leading-none text-[color:var(--hn-subtle)]" aria-hidden>
+          {columns.map((col, ci) => (
+            <div
+              key={col.idx}
+              className="relative"
+              style={{ flexBasis: 0, flexGrow: 1, minWidth: 0 }}
+            >
+              {yearTicks.has(ci) && (
+                <span className="absolute left-0 top-0 whitespace-nowrap tabular-nums">
+                  {col.year}
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

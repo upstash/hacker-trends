@@ -218,6 +218,7 @@ export function WhoIsHiringSearch() {
           onWindow={setWindowKey}
           normalized={normalized}
           onToggleNormalized={setNormalized}
+          showYearAxis
           onHover={onHoverSegment}
           onSelect={onSelectSegment}
           selected={latched}
