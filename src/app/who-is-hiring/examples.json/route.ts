@@ -14,18 +14,22 @@
  * shell paints, decodes it, and assembles each card's series from the parts -
  * falling back to a live per-card aggregate only if this fetch fails.
  *
- * Caching: the response carries `s-maxage` + `stale-while-revalidate` (the SAME
- * shape as `/examples.json`), so Vercel's edge CDN serves it without touching
- * Redis for everyone after the first hit and keeps serving a slightly-stale copy
- * while it refreshes in the background. The jobs gallery only changes when the
- * curated set or the daily index does, so day-old data is fine.
- *
- * Node runtime (not Edge): a cold cache miss fans out ~120 aggregate calls on the
- * way to priming the single Redis key, which is happier on Node's networking.
+ * This route NEVER computes the gallery. The ~120-aggregate build lives entirely
+ * in CI (`scripts/prime-jobs-gallery.ts`, run from the daily GitHub Action with a
+ * WRITABLE token), which primes the Redis `jobs-gallery-wire:<version>` key. The
+ * deployed app (read-only token) only does:
+ *   1. Vercel edge CDN - `s-maxage` + `stale-while-revalidate`, so everyone after
+ *      the first hit is served at the edge without touching Redis.
+ *   2. On a CDN miss, a single Redis GET of the pre-primed wire key.
+ *   3. If that read misses or fails, the in-repo snapshot (a frozen wire copy).
+ * There is no live-compute fallback, so a CDN miss can never fan out aggregates
+ * against the index.
  */
 
-import { getJobsGalleryData } from "@/lib/jobs-gallery-data";
-import { encodeJobsGalleryWire } from "@/lib/jobs-gallery-wire";
+import { readJobsGalleryWire } from "@/lib/jobs-gallery-data";
+// Frozen wire snapshot (scripts/dump-jobs-gallery.ts), served when the Redis key
+// is missing - the always-available floor so the gallery never renders empty.
+import snapshot from "./snapshot.json";
 
 export const runtime = "nodejs";
 
@@ -36,14 +40,8 @@ export const runtime = "nodejs";
 const CDN_CACHE = "public, max-age=0, s-maxage=86400, stale-while-revalidate=604800";
 
 export async function GET() {
-  try {
-    const wire = encodeJobsGalleryWire(await getJobsGalleryData());
-    return Response.json(wire, { headers: { "cache-control": CDN_CACHE } });
-  } catch (e) {
-    // Never cache a failure - let the next request retry against Redis.
-    return Response.json(
-      { error: (e as Error).message },
-      { status: 502, headers: { "cache-control": "no-store" } },
-    );
-  }
+  // Read-only: try the CI-primed Redis wire key (one KV GET, no index access),
+  // else serve the baked snapshot. Never computes, so this is always cheap.
+  const wire = (await readJobsGalleryWire()) ?? snapshot;
+  return Response.json(wire, { headers: { "cache-control": CDN_CACHE } });
 }

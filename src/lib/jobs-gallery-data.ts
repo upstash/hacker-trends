@@ -30,6 +30,10 @@ import { hnRedis, runAggregate } from "@/lib/hn-index";
 import { drillIndex } from "@/lib/jobs-index";
 import { GALLERY } from "@/lib/jobs-gallery";
 import { parseParts } from "@/lib/jobs-trends";
+import {
+  encodeJobsGalleryWire,
+  type JobsGalleryWire,
+} from "@/lib/jobs-gallery-wire";
 
 /** Lean monthly point - the only thing the mini charts plot. */
 export type MonthCount = { key: number; docCount: number };
@@ -46,6 +50,11 @@ const HAS_CREDS = !!(
 );
 
 const CACHE_KEY = `jobs-gallery:${JOBS_GALLERY_VERSION}`;
+// The already-encoded WIRE form (the exact bytes the /who-is-hiring/examples.json
+// route serves). CI (`buildJobsGalleryWire`) writes it; the deployed route only
+// reads it (one Redis GET, no aggregates, no encode). Keyed separately from the
+// raw-data cache so a wire-format change can be invalidated independently.
+const WIRE_CACHE_KEY = `jobs-gallery-wire:${JOBS_GALLERY_VERSION}`;
 const CACHE_TTL_SECONDS = 60 * 60 * 24 * 30; // 30 days
 const BUILD_CONCURRENCY = 8;
 
@@ -173,4 +182,56 @@ export async function getJobsGalleryData(opts?: {
     }
   }
   return data;
+}
+
+/**
+ * READ-ONLY fetch of the gallery wire payload from Redis - the ONLY gallery
+ * access the deployed app does. It is a single KV GET against the
+ * `jobs-gallery-wire:<version>` key and NEVER computes histograms (no ~120
+ * aggregate fan-out): that build is owned entirely by CI (`buildJobsGalleryWire`
+ * run from the GitHub Action). Returns `null` on a miss, a stale-version value,
+ * or any error, so the caller falls back to the in-repo snapshot. The KV read
+ * does not depend on the search index, so it stays healthy even when live
+ * querying is disabled.
+ */
+export async function readJobsGalleryWire(): Promise<JobsGalleryWire | null> {
+  if (!redis) return null;
+  try {
+    const cached = await redis.get<JobsGalleryWire | string>(WIRE_CACHE_KEY);
+    const w =
+      typeof cached === "string"
+        ? (JSON.parse(cached) as JobsGalleryWire)
+        : cached;
+    if (w?.version === JOBS_GALLERY_VERSION && w.terms) return w;
+  } catch {
+    // missing / corrupt / legacy value -> caller serves the snapshot
+  }
+  return null;
+}
+
+/**
+ * CI-ONLY builder: recompute the gallery histograms from the live index and
+ * write BOTH the raw-data key (via `getJobsGalleryData({fresh:true})`) and the
+ * encoded wire key. Needs a WRITABLE Upstash token, so it is invoked from the
+ * GitHub Action (next to the daily ingest), never from the deployed app. The
+ * wire key is only written when the build is COMPLETE (every curated part
+ * resolved); a partial build is skipped so a transient gap never freezes for the
+ * 30-day TTL. Returns the freshly built wire (and whether it was persisted).
+ */
+export async function buildJobsGalleryWire(): Promise<{
+  wire: JobsGalleryWire;
+  cached: boolean;
+}> {
+  if (!redis) throw new Error("buildJobsGalleryWire: no Upstash credentials");
+  const data = await getJobsGalleryData({ fresh: true });
+  const wire = encodeJobsGalleryWire(data);
+  const complete = allGalleryParts().every(
+    (p) => (data.terms[p]?.length ?? 0) > 0,
+  );
+  if (complete) {
+    await redis.set(WIRE_CACHE_KEY, JSON.stringify(wire), {
+      ex: CACHE_TTL_SECONDS,
+    });
+  }
+  return { wire, cached: complete };
 }

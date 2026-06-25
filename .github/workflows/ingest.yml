@@ -114,3 +114,12 @@ jobs:
           else
             echo "Not a month boundary (day $DAY); nothing to finalize for hnjobs."
           fi
+
+      - name: Prime the Who-is-hiring gallery cache
+        # The deployed app NEVER computes the jobs gallery (read-only token, no
+        # ~120-aggregate fan-out on Vercel). It only reads the Redis
+        # `jobs-gallery-wire:<version>` key, which this step rebuilds against the
+        # just-refreshed index using the WRITABLE token. Runs last so the
+        # histograms reflect this run's fresh data. Fails the job if the build
+        # came back incomplete, so a degraded gallery doesn't pass silently.
+        run: bun scripts/prime-jobs-gallery.ts

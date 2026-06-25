@@ -16,9 +16,16 @@
 import {
   parquetReadObjects,
   asyncBufferFromUrl,
+  asyncBufferFromFile,
 } from "hyparquet";
 import { compressors } from "hyparquet-compressors";
 import { Redis, s } from "@upstash/redis";
+import { existsSync } from "node:fs";
+
+// Local copy of the open-index/hacker-news parquet archive (downloaded
+// 2026-06-25). When a month's file is present here we read it off disk instead
+// of range-fetching from HuggingFace - faster and works while HF is flaky.
+const LOCAL_ARCHIVE = "/Users/kimirti/proj/hn-archive";
 
 const REDIS_URL = process.env.UPSTASH_REDIS_REST_URL!;
 const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN!;
@@ -65,8 +72,10 @@ async function ensureIndex(): Promise<void> {
 
 const TYPE_NAMES = ["", "story", "comment", "poll", "pollopt", "job"] as const;
 
-const BATCH_SIZE = 500;
-const CONCURRENCY = 24;
+// Empirically ~15k writes/s saturates the DB's server-side index throughput;
+// 128 concurrency measured identical to 64, so 64 is the validated sweet spot.
+const BATCH_SIZE = 1000;
+const CONCURRENCY = 64;
 
 type HnRow = {
   id: number;
@@ -218,11 +227,15 @@ async function flushBatch(commands: unknown[][]): Promise<void> {
 }
 
 async function ingestMonth(year: string, month: string) {
+  const localPath = `${LOCAL_ARCHIVE}/data/${year}/${year}-${month}.parquet`;
   const url = `https://huggingface.co/datasets/open-index/hacker-news/resolve/main/data/${year}/${year}-${month}.parquet`;
   const t0 = Date.now();
-  console.log(`[${year}-${month}] reading parquet…`);
+  const useLocal = existsSync(localPath);
+  console.log(`[${year}-${month}] reading parquet ${useLocal ? `(local ${localPath})` : "(HuggingFace)"}…`);
 
-  const buf = await asyncBufferFromUrl({ url });
+  const buf = useLocal
+    ? await asyncBufferFromFile(localPath)
+    : await asyncBufferFromUrl({ url });
   const rows = (await parquetReadObjects({
     file: buf,
     compressors,
