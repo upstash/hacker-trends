@@ -308,7 +308,15 @@ function JobsStackedBarsInner({
           flex-grow-per-column), so each label lands flush-left under the first
           bar of its year. Only the main chart opts in via `showYearAxis`. */}
       {showYearAxis && anyData && !loading && (
-        <div className="jobs-axis flex select-none px-3 pb-2 text-[10px] leading-none text-[color:var(--hn-subtle)]" aria-hidden>
+        // Fixed height so the flex cells STRETCH to a real height and contain
+        // the absolute labels (otherwise the cells collapse to 0 and the text
+        // spills past the chart's bottom border); pt gaps it off the bars and
+        // pb keeps the labels clear of the border.
+        <div
+          className="jobs-axis flex select-none px-3 pt-1 pb-2.5 text-[10px] leading-none text-[color:var(--hn-subtle)]"
+          style={{ height: 28 }}
+          aria-hidden
+        >
           {columns.map((col, ci) => (
             <div
               key={col.idx}

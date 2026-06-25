@@ -28,6 +28,7 @@ import {
   type SearchIndex,
   type SortMode,
 } from "@/lib/hn-query";
+import { QUERYING_DISABLED, QUERYING_DISABLED_LABEL } from "@/lib/maintenance";
 
 export const runtime = "edge";
 // NOTE: intentionally NOT pinning preferredRegion. This is a global app, so the
@@ -62,6 +63,14 @@ const URL_ENDPOINT = process.env.UPSTASH_REDIS_REST_URL!;
 const TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN!;
 
 export async function GET(req: Request) {
+  // Live querying is disabled while the index is down: the whole app runs off the
+  // CDN-cached gallery data, so this route never touches Upstash. Return the
+  // neutral "disabled" message (the client guards against calling here at all, so
+  // this is just defense-in-depth for any stale page that still tries).
+  if (QUERYING_DISABLED) {
+    return json({ error: QUERYING_DISABLED_LABEL }, 503);
+  }
+
   if (!URL_ENDPOINT || !TOKEN) {
     return json({ error: "Missing Upstash credentials on the server" }, 500);
   }

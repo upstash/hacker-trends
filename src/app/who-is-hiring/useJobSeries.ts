@@ -19,6 +19,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { aggregate } from "@/lib/hn-search";
 import { drillIndex } from "@/lib/jobs-index";
+import { QUERYING_DISABLED } from "@/lib/maintenance";
+import { useJobsGallery } from "./useJobsGallery";
 import {
   parseParts,
   binMonths,
@@ -83,7 +85,14 @@ export function useJobSeries(terms: string[]): {
   // needs no fetch at all, so it never touches the effect.
   const [loaded, setLoaded] = useState<{ key: string; series: SeriesData[]; error: string | null } | null>(null);
 
+  // The CDN-cached gallery dataset (per-part month histograms). While live
+  // querying is disabled, the chart is assembled from THIS instead of a live
+  // aggregate, so a gallery-card click still draws its bars. (Cheap, module-
+  // cached; the hook must be called unconditionally.)
+  const dataset = useJobsGallery();
+
   useEffect(() => {
+    if (QUERYING_DISABLED) return; // no live aggregate while the DB is down
     if (cleaned.length === 0) return;
     const ctrl = new AbortController();
     (async () => {
@@ -112,19 +121,45 @@ export function useJobSeries(terms: string[]): {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
 
+  // Disabled path: build each series from the cached gallery dataset. A series
+  // string is split on `|`; each part's cached month-map is summed (a missing
+  // part just contributes nothing - there's no live fallback while down).
+  const cachedSeries = useMemo(() => {
+    if (!QUERYING_DISABLED || !dataset.ready) return null;
+    return cleaned.map((label, i) => {
+      const parts = parseParts(label);
+      const maps = parts.map((p) => {
+        const pts = dataset.lookupPart(p);
+        return pts ? binMonths(pts as RawBucket[]) : new Map<string, number>();
+      });
+      const byMonth = sumByMonth(maps);
+      return {
+        label,
+        parts,
+        color: colorAt(i),
+        byMonth,
+        total: monthTotal(byMonth),
+      } satisfies SeriesData;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dataset, key]);
+
   // The loaded result is only valid if it's for the current key (a stale result
   // from a previous comparison is ignored until the new fetch resolves).
   const current = loaded && loaded.key === key ? loaded : null;
-  const error = current?.error ?? null;
-  // Loading whenever there are terms but no fresh result for this key yet.
-  const loading = cleaned.length > 0 && current === null;
+  const error = QUERYING_DISABLED ? null : current?.error ?? null;
+  // Loading whenever there are terms but no data for this key yet. While disabled
+  // that means "until the cached gallery dataset has settled".
+  const loading = QUERYING_DISABLED
+    ? cleaned.length > 0 && !dataset.ready
+    : cleaned.length > 0 && current === null;
 
   // While the first real response is loading, render zero-height placeholder
   // series so the chart frame + colors are stable (no layout shift, no flash).
   const safe = useMemo(() => {
-    const loadedSeries = current?.series ?? [];
+    const loadedSeries = QUERYING_DISABLED ? cachedSeries ?? [] : current?.series ?? [];
     return loadedSeries.length ? loadedSeries : cleaned.map((t, i) => emptySeries(t, i));
-  }, [current, cleaned]);
+  }, [current, cleaned, cachedSeries]);
 
   return { series: safe, loading, error };
 }

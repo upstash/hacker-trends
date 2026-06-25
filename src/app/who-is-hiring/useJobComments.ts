@@ -37,6 +37,7 @@ import { useRef, useState } from "react";
 import { searchPosts, type HnDoc } from "@/lib/hn-search";
 import { parseParts, rankByDiscussion } from "@/lib/jobs-trends";
 import { drillIndex } from "@/lib/jobs-index";
+import { QUERYING_DISABLED } from "@/lib/maintenance";
 
 /**
  * Module-level result cache for the drill-down, keyed by the FULLY-resolved
@@ -142,6 +143,9 @@ export function useJobComments() {
   // page). `mode` only changes how the pending state renders: a fresh load shows
   // the spinner, a "more" load keeps the current postings on screen.
   const run = (args: LoadArgs, limit: number, mode: "fresh" | "more") => {
+    // Querying disabled: no live posting fetch. Stay idle; the panel renders a
+    // plain gray "querying is disabled" note (see JobsComments `disabled`).
+    if (QUERYING_DISABLED) return;
     const parts = parseParts(args.label);
     if (parts.length === 0) return;
 

@@ -30,6 +30,7 @@ import { JobsComments } from "./JobsComments";
 import { JobsGalleries } from "./JobsGalleries";
 import { useJobSeries } from "./useJobSeries";
 import { useJobComments } from "./useJobComments";
+import { QUERYING_DISABLED } from "@/lib/maintenance";
 
 export function WhoIsHiringSearch() {
   // Top-level state the chart + chips drive. Held here so a click on a gallery
@@ -94,6 +95,7 @@ export function WhoIsHiringSearch() {
   /** Stream the postings behind a segment into the panel. */
   const showSegment = useCallback(
     (hit: SegmentHit) => {
+      if (QUERYING_DISABLED) return; // drill-down needs live queries
       userDrilled.current = true;
       setDrillMeta({ value: hit.value, year: hit.year, month: hit.month });
       loadComments({
@@ -138,6 +140,7 @@ export function WhoIsHiringSearch() {
   // it is never empty on first paint. Fires at most once and only if the user
   // has not already drilled in (a fast hover before the aggregate returns wins).
   useEffect(() => {
+    if (QUERYING_DISABLED) return; // nothing to prefetch while the DB is down
     if (prefetched.current || userDrilled.current) return;
     if (loading) return; // wait for the real series, not the zero placeholders
     const seg = defaultDrillSegment(series);
@@ -232,6 +235,7 @@ export function WhoIsHiringSearch() {
           state={commentsState}
           segment={drillMeta}
           onLoadMore={loadMoreComments}
+          disabled={QUERYING_DISABLED}
         />
       </div>
 

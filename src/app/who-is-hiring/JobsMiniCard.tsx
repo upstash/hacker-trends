@@ -20,6 +20,7 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { aggregate } from "@/lib/hn-search";
 import { drillIndex } from "@/lib/jobs-index";
+import { QUERYING_DISABLED } from "@/lib/maintenance";
 import {
   binMonths,
   colorAt,
@@ -100,6 +101,9 @@ function JobsMiniCardInner({
   useEffect(() => {
     // Dataset path covered it (or hasn't settled yet) -> no live fetch needed.
     if (fromDataset || !dataset.ready) return;
+    // Querying disabled: no live fallback. Cards not in the cached dataset just
+    // stay as their flat placeholder rather than hitting the dead route.
+    if (QUERYING_DISABLED) return;
     const ctrl = new AbortController();
     let started = false;
     const run = () => {

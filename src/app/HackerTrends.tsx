@@ -14,6 +14,7 @@ import { decodeExamplesWire, type ExamplesWire } from "@/lib/examples-wire";
 import { EXAMPLE_GROUPS, COMPARISONS } from "@/lib/examples";
 import { sortByCoolness } from "@/lib/coolness";
 import { track, trackOutbound } from "@/lib/analytics";
+import { QUERYING_DISABLED, QUERYING_DISABLED_LABEL } from "@/lib/maintenance";
 import { TrendChart, type Range, type Series } from "./components/TrendChart";
 import { Results } from "./components/Results";
 import { CodePanel } from "./components/CodePanel";
@@ -176,6 +177,15 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
     [queries],
   );
 
+  // The gallery histograms, rebuilt from the compact wire form once. Declared up
+  // here (above the chart `series` memo) because while live querying is disabled
+  // the chart is fed from THESE cached buckets - keyed by term - instead of a
+  // live aggregate, so clicking a gallery example still draws its lines.
+  const termBuckets = useMemo(
+    () => (examplesData ? decodeExamplesWire(examplesData) : {}),
+    [examplesData],
+  );
+
   /* ---- which terms feed the result list ---------------------------- */
   const allTerms = useMemo(
     () => queries.map((q) => q.text.trim()).filter(Boolean),
@@ -217,6 +227,9 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
 
   /* ---- aggregations: one date-histogram per non-empty term --------- */
   useEffect(() => {
+    // Querying disabled: the chart reads cached `termBuckets` directly (see the
+    // `series` memo), so never fire a live aggregate.
+    if (QUERYING_DISABLED) return;
     const ctrl = new AbortController();
     const active = queries.filter((q) => q.text.trim());
     if (active.length === 0) {
@@ -253,6 +266,7 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
 
   /* ---- merged results across the active terms, scoped to filters --- */
   useEffect(() => {
+    if (QUERYING_DISABLED) return; // no live result drill-down while disabled
     const terms = termsKey ? termsKey.split("|") : [];
     if (terms.length === 0) {
       setDocs([]);
@@ -324,6 +338,7 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
 
   /* ---- top authors across the active terms, scoped to the range ---- */
   useEffect(() => {
+    if (QUERYING_DISABLED) return; // author facets need live aggregates
     const terms = termsKey ? termsKey.split("|") : [];
     if (terms.length === 0) {
       setAuthors([]);
@@ -373,9 +388,13 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
           id: q.id,
           text: q.text.trim(),
           color: colorById[q.id],
-          buckets: aggs[q.id]?.buckets ?? [],
+          // While live querying is disabled, draw from the CDN-cached gallery
+          // histograms (keyed by term) instead of a live aggregate.
+          buckets: QUERYING_DISABLED
+            ? termBuckets[q.text.trim()] ?? []
+            : aggs[q.id]?.buckets ?? [],
         })),
-    [queries, aggs, colorById],
+    [queries, aggs, colorById, termBuckets],
   );
 
   /* ---- input row mutations ----------------------------------------- */
@@ -411,11 +430,17 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
     // loading flag) empties the chart's series so it shows "loading…" exactly
     // like the initial load, rather than the old lines. (Resetting lastTermsKey
     // makes the results effect treat this as a fresh term-set too.)
-    setDocs([]);
-    setSearching(true);
-    setAggs({});
-    setAggsLoading(true);
-    lastTermsKey.current = "";
+    //
+    // While querying is disabled there's no live load to await: the chart swaps
+    // straight to the picked term's cached buckets, so skip the loading resets
+    // (they'd otherwise leave the chart stuck on "loading…" forever).
+    if (!QUERYING_DISABLED) {
+      setDocs([]);
+      setSearching(true);
+      setAggs({});
+      setAggsLoading(true);
+      lastTermsKey.current = "";
+    }
     window.scrollTo({ top: 0, behavior: "smooth" });
   }, []);
 
@@ -455,11 +480,6 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
 
   // The gallery's comparisons, ranked by the internal "coolness" metric, with
   // the vercel-vs-cloudflare matchup pinned to the front regardless of score.
-  // Rebuild the {key, docCount}[] histograms from the compact wire form once.
-  const termBuckets = useMemo(
-    () => (examplesData ? decodeExamplesWire(examplesData) : {}),
-    [examplesData],
-  );
   const comparisons = useMemo(() => {
     // Before the histograms load, every coolness score is 0 so this is a no-op
     // (stable sort keeps the curated order); it re-ranks once data arrives.
@@ -586,9 +606,12 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
               <input
                 value={q.text}
                 placeholder="add a term…"
+                // Disabled: the chips become a read-only legend for the picked
+                // example; free-text search is off while the DB is down.
+                readOnly={QUERYING_DISABLED}
                 onChange={(e) => updateQuery(q.id, e.target.value)}
               />
-              {queries.length > 1 && (
+              {!QUERYING_DISABLED && queries.length > 1 && (
                 <button
                   className="trend-x"
                   title="remove"
@@ -599,7 +622,7 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
               )}
             </div>
           ))}
-          {queries.length < MAX_QUERIES && (
+          {!QUERYING_DISABLED && queries.length < MAX_QUERIES && (
             <button className="trend-add" onClick={() => addQuery()}>
               + add term
             </button>
@@ -613,7 +636,9 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
           series={series}
           range={range}
           onSelectRange={selectRange}
-          loading={aggsLoading}
+          // Disabled: show the loading frame only until the cached gallery data
+          // lands, then render its lines (there is no live aggregate to await).
+          loading={QUERYING_DISABLED ? !examplesData : aggsLoading}
         />
       </div>
 
@@ -630,7 +655,14 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
       </div>
 
       {/* ---- everything below the chart is about the results ---- */}
-
+      {QUERYING_DISABLED ? (
+        // DB down: no live drill-down. A plain gray note (NOT an error) where the
+        // results would be; the chart above still works off the cached gallery.
+        <div className="px-3 pt-3 pb-8 text-[12px] text-[color:var(--hn-subtle)]">
+          {QUERYING_DISABLED_LABEL}
+        </div>
+      ) : (
+        <>
       {/* sort tabs + the "scale" footnote */}
       <div className="px-2 pt-2">
         <div className="flex items-center flex-wrap gap-x-3 gap-y-1 py-1">
@@ -791,6 +823,8 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
           </>
         )}
       </div>
+        </>
+      )}
 
       {/* Popular Comparisons: the trend gallery, now an in-page picker ---- */}
       <section className="gallery-section px-3 pt-4">

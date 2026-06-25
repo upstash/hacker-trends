@@ -19,6 +19,7 @@
  */
 
 import { colorAt, MAX_SERIES } from "@/lib/jobs-trends";
+import { QUERYING_DISABLED } from "@/lib/maintenance";
 
 /** Placeholder text; also the floor the auto-width uses so an empty chip is not
  *  a sliver. */
@@ -70,6 +71,9 @@ export function JobsCompareChips({
                 spellCheck={false}
                 autoComplete="off"
                 aria-label={`compare series ${i + 1}`}
+                // Disabled: the chips are a read-only legend for the picked
+                // comparison; free-text editing is off while the DB is down.
+                readOnly={QUERYING_DISABLED}
                 onChange={(e) => set(i, e.target.value)}
                 style={{ flex: "0 0 auto", width: `${ch}ch` }}
               />
@@ -78,7 +82,7 @@ export function JobsCompareChips({
                   {total.toLocaleString()}
                 </span>
               )}
-              {terms.length > 1 && (
+              {!QUERYING_DISABLED && terms.length > 1 && (
                 <button
                   className="trend-x"
                   title="remove series"
@@ -91,16 +95,18 @@ export function JobsCompareChips({
             </div>
           );
         })}
-        {terms.length < max && (
+        {!QUERYING_DISABLED && terms.length < max && (
           <button className="trend-add" onClick={add}>
             + add series
           </button>
         )}
       </div>
-      <div className="text-[10px] text-[color:var(--hn-subtle)] mt-1">
-        tip: use <code>|</code> to OR several terms into one bar, e.g.{" "}
-        <code>backend|sre|devops</code>
-      </div>
+      {!QUERYING_DISABLED && (
+        <div className="text-[10px] text-[color:var(--hn-subtle)] mt-1">
+          tip: use <code>|</code> to OR several terms into one bar, e.g.{" "}
+          <code>backend|sre|devops</code>
+        </div>
+      )}
     </div>
   );
 }

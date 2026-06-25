@@ -20,6 +20,7 @@ import { memo } from "react";
 import type { JSX } from "react";
 import type { CommentsState } from "./useJobComments";
 import { WHO_IS_HIRING_THREADS } from "@/lib/who-is-hiring-data";
+import { QUERYING_DISABLED_LABEL } from "@/lib/maintenance";
 
 /** Same peach highlight the main search uses (Results.tsx). */
 const MARK = { background: "#ffe1cc", color: "#000", padding: 0 } as const;
@@ -49,12 +50,16 @@ function JobsCommentsInner({
   state,
   segment,
   onLoadMore,
+  disabled = false,
 }: {
   state: CommentsState;
   segment?: DrillSegmentMeta | null;
   /** load the next page of postings for the current segment (the "Load more"
    *  button). Omitted on surfaces that don't paginate. */
   onLoadMore?: () => void;
+  /** while live querying is off (DB down) the drill-down can't run: show a plain
+   *  gray note instead of the hover/loading/results states. */
+  disabled?: boolean;
 }) {
   const { status, load, docs, hasMore, loadingMore } = state;
   const query = load ? load.parts.join(" ") : "";
@@ -102,6 +107,12 @@ function JobsCommentsInner({
         </h3>
       </div>
 
+      {disabled ? (
+        <p className="text-[11px] text-[color:var(--hn-subtle)] leading-relaxed py-2">
+          {QUERYING_DISABLED_LABEL}
+        </p>
+      ) : (
+        <>
       {status === "idle" && (
         <p className="text-[11px] text-[color:var(--hn-subtle)] leading-relaxed py-2">
           Hover (or click) a bar segment to read the job postings that mention
@@ -178,6 +189,8 @@ function JobsCommentsInner({
               {loadingMore ? "Loading…" : "Load more"}
             </button>
           )}
+        </>
+      )}
         </>
       )}
     </div>
