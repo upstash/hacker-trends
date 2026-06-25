@@ -20,6 +20,11 @@
 
 import { getExamplesData } from "@/lib/examples-data";
 import { encodeExamplesWire } from "@/lib/examples-wire";
+import { QUERYING_DISABLED } from "@/lib/maintenance";
+// Snapshot of the live gallery wire (308 terms), captured from the CDN before
+// the index went down. Served verbatim while querying is disabled so the
+// homepage chart + sparklines keep their cached lines with zero Upstash access.
+import snapshot from "./snapshot.json";
 
 export const runtime = "nodejs";
 
@@ -29,6 +34,11 @@ export const runtime = "nodejs";
 const CDN_CACHE = "public, max-age=0, s-maxage=86400, stale-while-revalidate=604800";
 
 export async function GET() {
+  // DB down: serve the baked snapshot (already in wire form) instead of fanning
+  // out aggregates to a dead index.
+  if (QUERYING_DISABLED) {
+    return Response.json(snapshot, { headers: { "cache-control": CDN_CACHE } });
+  }
   try {
     const wire = encodeExamplesWire(await getExamplesData());
     return Response.json(wire, { headers: { "cache-control": CDN_CACHE } });
