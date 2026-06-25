@@ -1,8 +1,13 @@
 "use client";
 
 import { useMemo, useRef, useState } from "react";
-import type { Bucket } from "@/lib/hn-search";
 import { MIN_MS, MAX_MS, MONTH_MS, SLOTS, slotRange } from "@/lib/trend-time";
+
+/** The lean monthly point the chart plots: only `key` (epoch-ms) + `docCount`
+ *  are read by `densify`. Kept loose so BOTH the live aggregate `Bucket[]` (which
+ *  carries an extra `keyAsString`) AND the cached gallery `MonthCount[]` served
+ *  while querying is disabled assign cleanly. */
+type ChartBucket = { key: number; docCount: number };
 
 const VIEW_W = 1000;
 const VIEW_H = 200;
@@ -26,7 +31,7 @@ export type Series = {
   id: string;
   text: string;
   color: string;
-  buckets: Bucket[];
+  buckets: ChartBucket[];
 };
 
 export type Range = { fromMs: number; toMs: number };
@@ -45,7 +50,7 @@ type Props = {
  * Without this, a term like "clubhouse" (only ~2020-21) would draw a line that
  * floats in mid-chart instead of rising from and returning to the baseline.
  */
-function densify(buckets: Bucket[]): Float64Array {
+function densify(buckets: ChartBucket[]): Float64Array {
   const dense = new Float64Array(SLOTS);
   for (const b of buckets) {
     const slot = Math.round((b.key - MIN_MS) / MONTH_MS);
