@@ -29,7 +29,18 @@ import {
   type SortMode,
 } from "@/lib/hn-query";
 import { QUERYING_DISABLED, QUERYING_DISABLED_LABEL } from "@/lib/maintenance";
+import { rateLimitRequest } from "@/lib/ratelimit";
 import type { Redis } from "@upstash/redis";
+import { after } from "next/server";
+
+/** Thrown by the cache-miss guard when an IP is over its rate limit, so the
+ * top-level handler can turn it into a 429 with the standard RateLimit-* headers
+ * (a control-flow signal, not a real failure). */
+class RateLimitError extends Error {
+  constructor(public headers: Record<string, string>) {
+    super("rate limited");
+  }
+}
 
 // Node serverless, NOT Edge. Aggregates over the full ~45M-doc index can run far
 // longer than Edge's hard ~25s ceiling for high-frequency terms ("ai", "google",
@@ -91,6 +102,7 @@ async function withCache<T>(
   redis: Redis,
   key: string,
   compute: () => Promise<T>,
+  onMiss?: () => Promise<void>,
 ): Promise<T> {
   try {
     const hit = await redis.get<T>(key);
@@ -98,6 +110,12 @@ async function withCache<T>(
   } catch {
     // ignore cache read errors - fall through to compute
   }
+  // Genuine cache miss: this request is about to run the (possibly 30s+) Upstash
+  // query. `onMiss` is where rate limiting lives, so the limit is charged ONLY
+  // for NEW uncached queries - CDN hits never reach this route, and Redis-cache
+  // hits return above before we get here. A throwing guard (RateLimitError)
+  // aborts before the expensive compute.
+  if (onMiss) await onMiss();
   const result = await compute();
   try {
     await redis.set(key, result, { ex: CACHE_TTL });
@@ -133,6 +151,20 @@ export async function GET(req: Request) {
   // Redis result cache, skipping the (possibly 30s+) Upstash query entirely.
   const cacheKey = cacheKeyFor(params);
 
+  // Per-IP rate-limit guard, run by `withCache` ONLY on a cache miss (i.e. a
+  // genuine new query that will hit Upstash). Cache hits never invoke it, so we
+  // never rate-limit a cache check. Fails open if the limiter is unconfigured or
+  // Redis errors (see lib/ratelimit.ts). On success we stash the RateLimit-*
+  // headers to echo on the 200; on a block we throw RateLimitError -> 429 below.
+  let rlHeaders: Record<string, string> = {};
+  const rateLimitGuard = async () => {
+    const rl = await rateLimitRequest(req);
+    // Flush analytics/sync AFTER the response (see ratelimit.ts) - never block on it.
+    if (rl.pending) after(rl.pending);
+    rlHeaders = rl.headers;
+    if (!rl.success) throw new RateLimitError(rl.headers);
+  };
+
   try {
     // `op=thread`: resolve the root story a comment hangs under, so the result
     // list can label it `on thread "<title>"`. Our index stores only each
@@ -141,10 +173,13 @@ export async function GET(req: Request) {
     if (params.get("op") === "thread") {
       const id = params.get("id");
       if (!id) return json({ error: "missing id" }, 400);
-      const root = await withCache(redis, cacheKey, () =>
-        resolveThreadRoot(redis, id),
+      const root = await withCache(
+        redis,
+        cacheKey,
+        () => resolveThreadRoot(redis, id),
+        rateLimitGuard,
       );
-      return json({ result: root }, 200, SEARCH_CACHE);
+      return json({ result: root }, 200, SEARCH_CACHE, rlHeaders);
     }
 
     const op = (params.get("op") as "search" | "aggregate") ?? "search";
@@ -165,34 +200,60 @@ export async function GET(req: Request) {
     // responses (see SEARCH_CACHE); the catch below never caches an error, so a
     // transient Upstash blip can't stick for the whole TTL.
     if (op === "aggregate") {
-      const result = await withCache(redis, cacheKey, () =>
-        runAggregate(redis, { q, from, to, scope, index }),
+      const result = await withCache(
+        redis,
+        cacheKey,
+        () => runAggregate(redis, { q, from, to, scope, index }),
+        rateLimitGuard,
       );
-      return json({ result }, 200, SEARCH_CACHE);
+      return json({ result }, 200, SEARCH_CACHE, rlHeaders);
     }
 
-    const result = await withCache(redis, cacheKey, () =>
-      runSearch(redis, {
-        q,
-        sort: (params.get("sort") as SortMode) ?? "relevance",
-        limit: params.get("limit") ? Number(params.get("limit")) : undefined,
-        from,
-        to,
-        by: params.get("by") ?? undefined,
-        type: params.get("type") ?? undefined,
-        scope,
-        index,
-      }),
+    const result = await withCache(
+      redis,
+      cacheKey,
+      () =>
+        runSearch(redis, {
+          q,
+          sort: (params.get("sort") as SortMode) ?? "relevance",
+          limit: params.get("limit") ? Number(params.get("limit")) : undefined,
+          from,
+          to,
+          by: params.get("by") ?? undefined,
+          type: params.get("type") ?? undefined,
+          scope,
+          index,
+        }),
+      rateLimitGuard,
     );
-    return json({ result }, 200, SEARCH_CACHE);
+    return json({ result }, 200, SEARCH_CACHE, rlHeaders);
   } catch (e) {
+    // A genuine over-limit request surfaces here as RateLimitError -> 429 with the
+    // standard headers (and no-store, so a rejection is never cached/replayed).
+    if (e instanceof RateLimitError) {
+      return json(
+        { error: "Rate limit exceeded. Please slow down." },
+        429,
+        "no-store",
+        e.headers,
+      );
+    }
     return json({ error: (e as Error).message }, 502);
   }
 }
 
-function json(body: unknown, status: number, cacheControl = "no-store"): Response {
+function json(
+  body: unknown,
+  status: number,
+  cacheControl = "no-store",
+  extraHeaders: Record<string, string> = {},
+): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "content-type": "application/json", "cache-control": cacheControl },
+    headers: {
+      "content-type": "application/json",
+      "cache-control": cacheControl,
+      ...extraHeaders,
+    },
   });
 }

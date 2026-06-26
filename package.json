@@ -9,6 +9,7 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@upstash/ratelimit": "^2.0.8",
     "@upstash/redis": "^1.38.0",
     "hyparquet": "^1.25.8",
     "hyparquet-compressors": "^1.1.1",
