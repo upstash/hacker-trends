@@ -79,8 +79,8 @@ const SEARCH_CACHE =
 // skips the expensive Upstash query entirely - the decisive win for slow common
 // terms whose live aggregate can take 30s+. This is global and shared across all
 // edge regions (unlike the per-region CDN cache), so the first viewer anywhere
-// warms it for everyone. Reads tolerate a miss; writes tolerate failure (e.g. a
-// read-only token) so caching can never break a response - it only ever helps.
+// warms it for everyone. Reads tolerate a miss and writes tolerate failure, so a
+// degraded cache can never break a response - it only ever helps.
 const CACHE_PREFIX = "hncache:v1:";
 const CACHE_TTL = 3600; // seconds; mirrors the CDN s-maxage
 
@@ -95,9 +95,8 @@ function cacheKeyFor(params: URLSearchParams): string {
 
 /** Return the cached payload if present, else compute it, cache it, and return.
  * Cache read/write failures are swallowed: a degraded cache must never turn a
- * working query into an error (NOTE: for the cache to actually populate, the
- * deployment's UPSTASH_REDIS_REST_TOKEN needs write access - a strictly
- * read-only token leaves this a no-op and falls back to the CDN cache). */
+ * working query into an error - on any cache error we just fall back to running
+ * the live query (and the CDN cache still absorbs cross-visitor repeats). */
 async function withCache<T>(
   redis: Redis,
   key: string,
@@ -120,15 +119,14 @@ async function withCache<T>(
   try {
     await redis.set(key, result, { ex: CACHE_TTL });
   } catch {
-    // ignore cache write errors (e.g. read-only token) - result still returned
+    // ignore cache write errors - the result is still returned to the caller
   }
   return result;
 }
 
 // Server-side Upstash credentials. These live only on the server and never reach
 // the browser; the client talks exclusively to this route, never to Upstash
-// directly. The token needs READ access for queries and (to populate the result
-// cache above) WRITE access scoped to the `hncache:` prefix.
+// directly.
 const URL_ENDPOINT = process.env.UPSTASH_REDIS_REST_URL!;
 const TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN!;
 
