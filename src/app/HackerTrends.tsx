@@ -93,24 +93,6 @@ function mergeDocs(lists: MergedDoc[][], sort: SortMode): MergedDoc[] {
   return out;
 }
 
-/**
- * Sum each author's matches across the compared terms' topAuthors lists, then
- * take the top 6. Shared by the two paths that feed the author filter chips:
- * the no-range path (which reuses the chart's already-fetched aggregates) and
- * the range-scoped path (which fetches its own).
- */
-function sumAuthors(
-  lists: { key: string; docCount: number }[][],
-): { key: string; docCount: number }[] {
-  const sum = new Map<string, number>();
-  for (const list of lists)
-    for (const au of list) sum.set(au.key, (sum.get(au.key) ?? 0) + au.docCount);
-  return [...sum.entries()]
-    .map(([key, docCount]) => ({ key, docCount }))
-    .sort((a, b) => b.docCount - a.docCount)
-    .slice(0, 6);
-}
-
 export function HackerTrends({ initial }: { initial: ShareState }) {
   // The gallery histograms are fetched AFTER first paint from the CDN-cached
   // `/examples.json` (see that route + page.tsx) rather than blocking the server
@@ -148,9 +130,8 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
       ? { fromMs: initial.from, toMs: initial.to }
       : null,
   );
-  // Result filters: a single author, comments-only, and "only show from <term>"
-  // when comparing several terms (else the list is all terms merged).
-  const [byAuthor, setByAuthor] = useState<string | null>(initial.author ?? null);
+  // Result filters: comments-only, and "only show from <term>" when comparing
+  // several terms (else the list is all terms merged).
   const [commentsOnly, setCommentsOnly] = useState<boolean>(
     initial.type === "comment",
   );
@@ -159,7 +140,6 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
   );
 
   const [docs, setDocs] = useState<MergedDoc[]>([]);
-  const [authors, setAuthors] = useState<{ key: string; docCount: number }[]>([]);
   // The term-set the current `docs` belong to; lets the results effect tell a
   // genuinely new comparison (blank + reload) from a same-terms refetch.
   const lastTermsKey = useRef("");
@@ -214,7 +194,6 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
       sort,
       from: range?.fromMs,
       to: range?.toMs,
-      author: byAuthor ?? undefined,
       type: commentsOnly ? "comment" : undefined,
       only: filterActive ? termFilter! : undefined,
       active: 0,
@@ -223,7 +202,7 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
     // replaceState (not the Next router): update the address bar without a
     // navigation/refetch or piling a history entry on every keystroke.
     window.history.replaceState(null, "", url);
-  }, [allTerms, sort, range, byAuthor, commentsOnly, termFilter, filterActive]);
+  }, [allTerms, sort, range, commentsOnly, termFilter, filterActive]);
 
   /* ---- aggregations: one date-histogram per non-empty term --------- */
   useEffect(() => {
@@ -309,7 +288,6 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
             limit: 30,
             from: fromIso,
             to: toIso,
-            by: byAuthor ?? undefined,
             type: commentsOnly ? "comment" : undefined,
             signal: ctrl.signal,
           }).then((s) => s.docs.map((d) => ({ ...d, _term: term }) as MergedDoc)),
@@ -334,50 +312,7 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
       clearTimeout(t);
       ctrl.abort();
     };
-  }, [termsKey, sort, fromIso, toIso, byAuthor, commentsOnly]);
-
-  /* ---- top authors across the active terms, scoped to the range ---- */
-  useEffect(() => {
-    if (QUERYING_DISABLED) return; // author facets need live aggregates
-    const terms = termsKey ? termsKey.split("|") : [];
-    if (terms.length === 0) {
-      setAuthors([]);
-      return;
-    }
-
-    // No date range → the full-history aggregates the chart already fetched
-    // (the `aggs` map) carry topAuthors for the exact same query. Reuse them
-    // instead of firing a second, byte-identical aggregate per term. (Previously
-    // this effect always refetched, doubling every aggregate request on load.)
-    if (!fromIso && !toIso) {
-      const wanted = new Set(terms.map((t) => t.toLowerCase()));
-      const lists = queries
-        .filter((q) => wanted.has(q.text.trim().toLowerCase()) && aggs[q.id])
-        .map((q) => aggs[q.id].topAuthors);
-      setAuthors(sumAuthors(lists));
-      return;
-    }
-
-    // A range is set: the full-history aggs don't match the scoped window, so we
-    // genuinely need a range-scoped aggregate per term.
-    const ctrl = new AbortController();
-    const t = setTimeout(() => {
-      Promise.all(
-        terms.map((term) =>
-          aggregate({ q: term, from: fromIso, to: toIso, signal: ctrl.signal }),
-        ),
-      )
-        .then((list) => {
-          if (ctrl.signal.aborted) return;
-          setAuthors(sumAuthors(list.map((a) => a.topAuthors)));
-        })
-        .catch(() => {});
-    }, 150);
-    return () => {
-      clearTimeout(t);
-      ctrl.abort();
-    };
-  }, [termsKey, fromIso, toIso, aggs, queries]);
+  }, [termsKey, sort, fromIso, toIso, commentsOnly]);
 
   /* ---- chart series ------------------------------------------------ */
   const series: Series[] = useMemo(
@@ -420,7 +355,6 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
     });
     setQueries(picked.map((text, i) => ({ id: `q${i}`, text })));
     setTermFilter(null);
-    setByAuthor(null);
     setCommentsOnly(false);
     setRange(null);
     setExpanded(false);
@@ -580,7 +514,7 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
             Upstash Redis Search
           </a>
           . Below the chart sit the actual stories and comments behind the
-          lines, filterable by term or author.{" "}
+          lines, filterable by term.{" "}
           {/* Crawlable internal link, but visually hidden (sr-only): it stays
               in the HTML for SEO/screen readers without surfacing the page to
               regular visitors. */}
@@ -649,7 +583,6 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
           sort={sort}
           from={fromIso}
           to={toIso}
-          by={byAuthor ?? undefined}
           type={commentsOnly ? "comment" : undefined}
         />
       </div>
@@ -717,78 +650,42 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
         </div>
       </div>
 
-      {/* filters: narrow the merged list - by term, by author. (comments-only
-          lives in the sort-tab strip above now.) The wrapper renders (with a
-          reserved min-height) as soon as there are terms, even before the
-          aggregates that populate it land, so the row doesn't pop in and shift
-          the results down mid-load. */}
-      {allTerms.length > 0 && (
-        <div className="px-2 pt-1" style={{ minHeight: 26 }}>
+      {/* filters: narrow the merged list by term (comments-only lives in the
+          sort-tab strip above). Only shown when comparing several terms - a
+          single term has nothing to filter down to. */}
+      {series.length > 1 && (
+        <div className="px-2 pt-1">
           <div className="filters-row">
-            {series.length > 1 && (
-              <>
-                <span className="filters-label">show</span>
-                {series.map((s) => {
-                  const on = filterActive && termFilter!.toLowerCase() === s.text.toLowerCase();
-                  return (
-                    <button
-                      key={s.id}
-                      className="filter-toggle"
-                      data-active={on}
-                      style={{ borderColor: s.color }}
-                      title={on ? "show all terms again" : `only show posts matching “${s.text}”`}
-                      onClick={() =>
-                        setTermFilter((cur) => {
-                          const next =
-                            cur && cur.toLowerCase() === s.text.toLowerCase()
-                              ? null
-                              : s.text;
-                          track("filter_toggle", {
-                            kind: "term",
-                            value: s.text,
-                            active: next !== null,
-                          });
-                          return next;
-                        })
-                      }
-                    >
-                      <span className="trend-dot" style={{ background: s.color }} />
-                      {s.text}
-                    </button>
-                  );
-                })}
-              </>
-            )}
-            {authors.length > 0 && (
-              <span className="filters-authors">
-                <span className="filters-label">from</span>
-                {authors.map((a) => (
-                  <button
-                    key={a.key}
-                    className="facet-pick"
-                    data-active={byAuthor === a.key}
-                    title={`only show posts from ${a.key}`}
-                    onClick={() =>
-                      setByAuthor((cur) => {
-                        const next = cur === a.key ? null : a.key;
-                        track("filter_toggle", {
-                          kind: "author",
-                          value: a.key,
-                          active: next !== null,
-                        });
-                        return next;
-                      })
-                    }
-                  >
-                    {a.key}
-                    <span className="text-[color:var(--hn-subtle)]">
-                      {" "}
-                      ({a.docCount.toLocaleString()})
-                    </span>
-                  </button>
-                ))}
-              </span>
-            )}
+            <span className="filters-label">show</span>
+            {series.map((s) => {
+              const on = filterActive && termFilter!.toLowerCase() === s.text.toLowerCase();
+              return (
+                <button
+                  key={s.id}
+                  className="filter-toggle"
+                  data-active={on}
+                  style={{ borderColor: s.color }}
+                  title={on ? "show all terms again" : `only show posts matching “${s.text}”`}
+                  onClick={() =>
+                    setTermFilter((cur) => {
+                      const next =
+                        cur && cur.toLowerCase() === s.text.toLowerCase()
+                          ? null
+                          : s.text;
+                      track("filter_toggle", {
+                        kind: "term",
+                        value: s.text,
+                        active: next !== null,
+                      });
+                      return next;
+                    })
+                  }
+                >
+                  <span className="trend-dot" style={{ background: s.color }} />
+                  {s.text}
+                </button>
+              );
+            })}
           </div>
         </div>
       )}

@@ -2,7 +2,7 @@
  * Shareable view state <-> URL query string.
  *
  * The whole point: every knob that changes what's on screen (the compared
- * terms, the sort, the selected date range, the author/type facet filters, and
+ * terms, the sort, the selected date range, the type facet filter, and
  * which result tab is open) lives in the URL so a link reproduces the exact
  * view. The server `page.tsx` parses the incoming `?…` to seed initial state
  * (no hydration flash); the client rewrites it via `history.replaceState` as
@@ -12,7 +12,6 @@
  *   q       repeated, one per compared term, in order   ?q=openai&q=anthropic
  *   sort    relevance|score|discussed|recent            omitted when "relevance"
  *   from,to selected range as epoch-ms (month-aligned)   both present or neither
- *   author  active "by author" facet filter
  *   type    active "by type" facet filter
  *   only    "only show from <term>" filter (merged mode) one of the q terms
  *   active  index into the term list of the open tab     omitted when 0
@@ -35,7 +34,6 @@ export type ShareState = {
   /** Selected range in epoch-ms; both set together or both absent. */
   from?: number;
   to?: number;
-  author?: string;
   type?: string;
   /** "only show from <term>" filter for the merged result list (one of `terms`). */
   only?: string;
@@ -75,7 +73,6 @@ export function parseShareState(sp: URLSearchParams): ShareState {
     sort,
     from: hasRange ? from : undefined,
     to: hasRange ? to : undefined,
-    author: sp.get("author")?.trim() || undefined,
     type: sp.get("type")?.trim() || undefined,
     only: sp.get("only")?.trim() || undefined,
     active,
@@ -94,7 +91,6 @@ export function buildShareSearch(state: ShareState): string {
     sp.set("from", String(Math.round(state.from)));
     sp.set("to", String(Math.round(state.to)));
   }
-  if (state.author) sp.set("author", state.author);
   if (state.type) sp.set("type", state.type);
   if (state.only) sp.set("only", state.only);
   if (state.active > 0) sp.set("active", String(state.active));

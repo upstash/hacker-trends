@@ -71,8 +71,6 @@ export type Bucket = { key: number; keyAsString: string; docCount: number };
 
 export type Aggregations = {
   buckets: Bucket[];
-  topAuthors: { key: string; docCount: number }[];
-  byType: { key: string; docCount: number }[];
 };
 
 export type AggResponse = Aggregations & { latencyMs: number };
@@ -324,12 +322,18 @@ export type AggregateArgsOpts = {
   index?: SearchIndex;
 };
 
-/** The date-histogram + facet aggregations powering the trend chart. Shared by
- *  the raw-command builder and the SDK snippet so they can't drift. */
+/** The date-histogram powering the trend chart. Shared by the raw-command
+ *  builder and the SDK snippet so they can't drift.
+ *
+ *  We used to also request `top_authors`/`by_type` `$terms` facets on every
+ *  aggregate, but `by_type` was read by nobody and `top_authors` only fed the
+ *  main page's author-filter chips - and both ran a `$terms` over a non-`.fast()`
+ *  keyword field, which a benchmark showed cost ~300ms+ per call on the giant
+ *  `hn` index (about a third of the round-trip). Dropped both; the chart only
+ *  ever needed `by_month`. Bring `top_authors` back here (and re-add the chips)
+ *  if the author filter returns - ideally after making `by` a `.fast()` field. */
 const AGGREGATIONS = {
   by_month: { $dateHistogram: { field: "time", fixedInterval: "30d" } },
-  top_authors: { $terms: { field: "by", size: 6 } },
-  by_type: { $terms: { field: "type", size: 4 } },
 } as const;
 
 /** The SDK `aggregate({...})` option object (everything after the index). */
@@ -563,9 +567,7 @@ await redis.search.createIndex({
  * The SDK parses Upstash's responses for us, so these mappers take already-
  * structured objects (not the raw REST kv-arrays the old parsers handled):
  *   query()     -> Array<{ key, score, data }>   (data has typed fields)
- *   aggregate() -> { by_month: { buckets:[{ key, keyAsString, docCount }] },
- *                    top_authors: { buckets:[{ key, docCount }], ... },
- *                    by_type:     { buckets:[{ key, docCount }], ... } }
+ *   aggregate() -> { by_month: { buckets:[{ key, keyAsString, docCount }] } }
  * We just project those onto the app's `HnDoc` / `Aggregations` types and coerce
  * the numeric fields (the SDK already returns them as numbers; we coerce
  * defensively so a missing field is 0, not NaN).
@@ -608,21 +610,10 @@ function mapDateBuckets(node: unknown): Bucket[] {
   }));
 }
 
-function mapTermBuckets(node: unknown): { key: string; docCount: number }[] {
-  const buckets = (node as { buckets?: unknown })?.buckets;
-  if (!Array.isArray(buckets)) return [];
-  return (buckets as SdkBucket[]).map((b) => ({
-    key: String(b.key),
-    docCount: Number(b.docCount ?? 0),
-  }));
-}
-
 /** Map the SDK's structured `aggregate()` result onto `Aggregations`. */
 export function mapAggregations(agg: unknown): Aggregations {
   const a = (agg ?? {}) as Record<string, unknown>;
   return {
     buckets: mapDateBuckets(a.by_month),
-    topAuthors: mapTermBuckets(a.top_authors),
-    byType: mapTermBuckets(a.by_type),
   };
 }

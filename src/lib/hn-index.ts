@@ -71,8 +71,8 @@ export async function runSearch(
 
 /**
  * Run a SEARCH.AGGREGATE through the SDK and map the structured aggregation
- * object (by_month / top_authors / by_type) onto the app's `Aggregations`. The
- * filter + aggregations come from `buildAggregateOptions`, matching what
+ * object (by_month date-histogram) onto the app's `Aggregations`. The filter +
+ * aggregations come from `buildAggregateOptions`, matching what
  * `aggregateSnippet` renders.
  */
 export async function runAggregate(
