@@ -44,6 +44,15 @@
  *   bun scripts/ingest-jobs.ts                 # validate the latest month only
  *   bun scripts/ingest-jobs.ts 2026-06         # one specific month
  *   bun scripts/ingest-jobs.ts 2026-01 2026-06 # an inclusive month range
+ *
+ * Index lifecycle flags - for a heavy backfill, dropping the index first and
+ * recreating it only AFTER all postings are upserted is both faster (no live
+ * index update per HSET) and safer (the page never queries a half-built index):
+ *   bun scripts/ingest-jobs.ts --drop-index            # drop index, KEEP hashes
+ *   bun scripts/ingest-jobs.ts --all --no-index        # upsert, do NOT (re)create
+ *   bun scripts/ingest-jobs.ts --create-index          # build index over hashes
+ * `--no-index` may be combined with --all / a month / a range; `--drop-index`
+ * and `--create-index` are standalone (they ignore any month args and exit).
  */
 
 import { Redis, s } from "@upstash/redis";
@@ -60,6 +69,48 @@ const redis = new Redis({ url: REDIS_URL, token: REDIS_TOKEN });
 /** The dedicated postings index. Distinct prefix so it never overlaps `hn:`. */
 export const JOBS_INDEX = "hnjobs";
 export const JOBS_PREFIX = "hnjob:";
+
+/** The `hnjobs` field schema, shared by the create + drop index handles. */
+const JOBS_SCHEMA = s.object({
+  // Postings have no headline; kept empty so $dateHistogram/$terms still see the
+  // same field set the `hn` index exposes.
+  title: s.string(),
+  text: s.string(),
+  by: s.keyword(),
+  type: s.keyword(),
+  time: s.date().fast(),
+  parent: s.number("F64"),
+  thread: s.keyword(),
+  score: s.number("F64"),
+  // The whole point of this index: a real per-posting discussion count.
+  replies: s.number("F64"),
+});
+
+/** Handle used only for SEARCH.DROP (drop needs just the name; the SDK still
+ *  wants a schema to build the handle). */
+const jobsIndexHandle = redis.search.index({
+  name: JOBS_INDEX,
+  schema: JOBS_SCHEMA,
+});
+
+/**
+ * Drop the `hnjobs` index WITHOUT deleting its `hnjob:*` hashes (SEARCH.DROP
+ * removes only the index structure, not the underlying keys). Used before a
+ * heavy backfill so the upserts run index-free; the index is recreated after.
+ */
+export async function dropJobsIndex(): Promise<void> {
+  try {
+    await jobsIndexHandle.drop();
+    console.log(`index "${JOBS_INDEX}" dropped (hnjob:* hashes kept)`);
+  } catch (e) {
+    const msg = (e as Error).message ?? String(e);
+    if (/not\s*exist|no such|unknown index|not found/i.test(msg)) {
+      console.log(`index "${JOBS_INDEX}" did not exist; nothing to drop`);
+      return;
+    }
+    throw e;
+  }
+}
 
 /**
  * The shared `hn` index we READ postings + their children from. We query it via
@@ -91,20 +142,7 @@ export async function ensureJobsIndex(): Promise<{ created: boolean }> {
       name: JOBS_INDEX,
       dataType: "hash",
       prefix: JOBS_PREFIX,
-      schema: s.object({
-        // Postings have no headline; kept empty so $dateHistogram/$terms still
-        // see the same field set the `hn` index exposes.
-        title: s.string(),
-        text: s.string(),
-        by: s.keyword(),
-        type: s.keyword(),
-        time: s.date().fast(),
-        parent: s.number("F64"),
-        thread: s.keyword(),
-        score: s.number("F64"),
-        // The whole point of this index: a real per-posting discussion count.
-        replies: s.number("F64"),
-      }),
+      schema: JOBS_SCHEMA,
     });
     console.log(`index "${JOBS_INDEX}" created`);
     // A freshly-created index isn't immediately ready to pick up keys written
@@ -147,7 +185,22 @@ const PAGE = 500;
 async function queryAll(filter: Record<string, unknown>): Promise<HnDocData[]> {
   const out: HnDocData[] = [];
   for (let offset = 0; ; offset += PAGE) {
-    const page = (await hnSource.query({ filter, limit: PAGE, offset })) as Array<{ data: HnDocData }>;
+    // Retry transient failures: the SDK can return `null` (or throw) on a flaky
+    // 5xx, and an unguarded null used to abort the whole multi-hour backfill
+    // mid-month. Re-query the same page a few times with backoff before giving up.
+    let page: Array<{ data: HnDocData }> | null = null;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        page = (await hnSource.query({ filter, limit: PAGE, offset })) as Array<{
+          data: HnDocData;
+        }> | null;
+        if (page) break;
+      } catch {
+        /* fall through to backoff + retry */
+      }
+      await new Promise((r) => setTimeout(r, 250 * (attempt + 1)));
+    }
+    if (!page) throw new Error(`queryAll: page at offset ${offset} kept failing`);
     for (const row of page) out.push(row.data);
     if (page.length < PAGE) break;
   }
@@ -274,21 +327,47 @@ const LATEST = WHO_IS_HIRING_THREADS[WHO_IS_HIRING_THREADS.length - 1];
 
 async function main() {
   const args = process.argv.slice(2);
-  await ensureJobsIndex();
+  const flags = new Set(args.filter((a) => a.startsWith("--")));
+  const positional = args.filter((a) => !a.startsWith("--"));
+
+  // Standalone index-lifecycle ops (ignore month args, then exit).
+  if (flags.has("--drop-index")) {
+    await dropJobsIndex();
+    return;
+  }
+  if (flags.has("--create-index")) {
+    const { created } = await ensureJobsIndex();
+    console.log(
+      created
+        ? `index "${JOBS_INDEX}" created over the existing hnjob:* hashes`
+        : `index "${JOBS_INDEX}" already present; nothing to create`,
+    );
+    return;
+  }
+
+  // Upsert path. --no-index skips (re)creating the index so a heavy backfill runs
+  // index-free; recreate it afterwards with --create-index.
+  if (flags.has("--no-index")) {
+    console.log(
+      `--no-index: upserting WITHOUT (re)creating "${JOBS_INDEX}"; run --create-index when done`,
+    );
+  } else {
+    await ensureJobsIndex();
+  }
 
   let targets: HiringThread[];
   let mode: string;
 
-  if (args[0] === "--all") {
+  if (flags.has("--all")) {
     // FULL BACKFILL - every monthly thread. Heavy; never run unattended.
     targets = WHO_IS_HIRING_THREADS;
     mode = "FULL BACKFILL (--all)";
-  } else if (args.length === 2) {
-    targets = threadsInRange(args[0], args[1]);
-    mode = `range ${args[0]}..${args[1]}`;
-  } else if (args.length === 1) {
-    targets = WHO_IS_HIRING_THREADS.filter((t) => t.month === args[0]);
-    mode = `month ${args[0]}`;
+  } else if (positional.length === 2) {
+    targets = threadsInRange(positional[0], positional[1]);
+    mode = `range ${positional[0]}..${positional[1]}`;
+  } else if (positional.length === 1) {
+    targets = WHO_IS_HIRING_THREADS.filter((t) => t.month === positional[0]);
+    mode = `month ${positional[0]}`;
   } else {
     // Default: validate the latest month only (the safe slice).
     targets = LATEST ? [LATEST] : [];
@@ -304,7 +383,27 @@ async function main() {
   let totalPostings = 0;
   let totalWithReplies = 0;
   for (const thread of targets) {
-    const r = await ingestThread(thread);
+    // Per-month retry: a heavy full backfill takes ~90 min and the connection
+    // throws the occasional transient ECONNRESET / "unable to connect" mid-month.
+    // Retry the whole month a few times (it's idempotent) so one network blip
+    // can't abort the entire run partway through.
+    let r: Awaited<ReturnType<typeof ingestThread>> | null = null;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      try {
+        r = await ingestThread(thread);
+        break;
+      } catch (e) {
+        const msg = (e as Error).message ?? String(e);
+        console.error(
+          `[${thread.month}] attempt ${attempt + 1} failed: ${msg} - retrying`,
+        );
+        await new Promise((res) => setTimeout(res, 2000 * (attempt + 1)));
+      }
+    }
+    if (!r) {
+      console.error(`[${thread.month}] FAILED after retries - skipping this month`);
+      continue;
+    }
     totalPostings += r.postings;
     totalWithReplies += r.withReplies;
   }
@@ -312,7 +411,7 @@ async function main() {
   console.log(
     `DONE: wrote ${totalPostings} postings across ${targets.length} month(s); ${totalWithReplies} had >=1 direct reply.`,
   );
-  if (args.length === 0) {
+  if (positional.length === 0 && !flags.has("--all")) {
     console.log(
       `\nThis was the SAFE single-month validation. To backfill everything (heavy):\n  bun scripts/ingest-jobs.ts --all\nor a range, e.g.:\n  bun scripts/ingest-jobs.ts 2025-01 2026-06`,
     );
