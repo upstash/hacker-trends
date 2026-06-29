@@ -89,26 +89,47 @@ async function compute(): Promise<ExamplesData> {
 }
 
 /**
+ * Read-only cache lookup: returns the cached gallery data, or `null` on a miss
+ * (missing / corrupt / legacy-version key, or no creds). NEVER computes.
+ *
+ * The serverless route (`/examples.json`) uses this so a cache miss on Vercel
+ * falls back to the baked snapshot instead of fanning out ~300 aggregates -
+ * which the read-only prod token can't even cache, so every miss would re-run
+ * and hammer the Search DB. The cache is kept warm out-of-band by the daily
+ * ingest Action (`refresh-cache.ts`), never by Vercel request traffic.
+ */
+export async function readExamplesCache(): Promise<ExamplesData | null> {
+  if (!redis) return null;
+  try {
+    // The SDK auto-deserializes JSON values, so the cached blob comes back as
+    // the parsed object (or a string if it was stored raw) - handle both.
+    const cached = await redis.get<ExamplesData | string>(CACHE_KEY);
+    const d =
+      typeof cached === "string"
+        ? (JSON.parse(cached) as ExamplesData)
+        : cached;
+    if (d?.version === CATALOG_VERSION && d.terms) return d;
+  } catch {
+    // fall through to null on a missing/corrupt/legacy value
+  }
+  return null;
+}
+
+/**
  * The gallery's data. Reads the single cache key; on a miss (or `fresh`)
  * recomputes all histograms and best-effort-writes the cache. Always returns
  * data; the cache is an optimization, never a hard dependency.
+ *
+ * NOTE: this is the COMPUTE-on-miss path - use it only from writable/offline
+ * contexts (the prime script, local dev). The Vercel route must use
+ * `readExamplesCache()` so a miss never triggers the ~300-aggregate fan-out.
  */
 export async function getExamplesData(opts?: {
   fresh?: boolean;
 }): Promise<ExamplesData> {
-  if (!opts?.fresh && redis) {
-    try {
-      // The SDK auto-deserializes JSON values, so the cached blob comes back as
-      // the parsed object (or a string if it was stored raw) - handle both.
-      const cached = await redis.get<ExamplesData | string>(CACHE_KEY);
-      const d =
-        typeof cached === "string"
-          ? (JSON.parse(cached) as ExamplesData)
-          : cached;
-      if (d?.version === CATALOG_VERSION && d.terms) return d;
-    } catch {
-      // fall through to recompute on a missing/corrupt/legacy value
-    }
+  if (!opts?.fresh) {
+    const cached = await readExamplesCache();
+    if (cached) return cached;
   }
   const data = await compute();
   if (redis) {

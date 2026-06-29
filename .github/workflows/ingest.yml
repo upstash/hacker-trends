@@ -123,3 +123,16 @@ jobs:
         # histograms reflect this run's fresh data. Fails the job if the build
         # came back incomplete, so a degraded gallery doesn't pass silently.
         run: bun scripts/prime-jobs-gallery.ts
+
+      - name: Prime the examples gallery cache
+        # Twin of the step above for the main landing-page gallery. The deployed
+        # app NEVER computes this (read-only token, no ~300-aggregate fan-out on
+        # Vercel) - it only reads the Redis `examples:<CATALOG_VERSION>` key, which
+        # this step rebuilds against the just-refreshed index using the WRITABLE
+        # token. Without this, the key only ever got written by an accidental
+        # writable cache-miss and lapsed on its 30-day TTL, leaving prod to serve
+        # stale/snapshot data or (pre-fix) re-fan-out on every miss.
+        # refresh-cache.ts reads the key back and exits non-zero if the write
+        # didn't persist, so a degraded gallery fails the job instead of passing
+        # silently.
+        run: bun scripts/refresh-cache.ts

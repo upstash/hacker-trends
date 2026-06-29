@@ -14,16 +14,22 @@
  * payload is the compact wire form (see examples-wire.ts), ~10× smaller than the
  * raw {key,docCount} objects.
  *
- * Node runtime (not Edge): a cold cache miss fans out ~150 aggregate calls on the
- * way to priming the single Redis key, which is happier on Node's networking.
+ * PURE-READ on Vercel: this route NEVER computes. The Redis `examples:<version>`
+ * key is primed out-of-band by the daily ingest Action (`refresh-cache.ts`); the
+ * serverless function only ever does a single GET. On a cache miss it serves the
+ * baked snapshot (with a short edge TTL so it self-heals once the Action re-primes)
+ * instead of fanning out ~300 aggregates - the read-only prod token can't cache
+ * the result anyway, so a computing route would re-run that fan-out on every miss
+ * and hammer the Search DB (a contributor to the 2026-06-25 spike SEV-1).
  */
 
-import { getExamplesData } from "@/lib/examples-data";
+import { readExamplesCache } from "@/lib/examples-data";
 import { encodeExamplesWire } from "@/lib/examples-wire";
 import { QUERYING_DISABLED } from "@/lib/maintenance";
 // Snapshot of the live gallery wire (308 terms), captured from the CDN before
-// the index went down. Served verbatim while querying is disabled so the
-// homepage chart + sparklines keep their cached lines with zero Upstash access.
+// the index went down. Served verbatim while querying is disabled, AND as the
+// fallback on a live cache miss, so the homepage chart + sparklines always have
+// lines to draw with zero Upstash compute.
 import snapshot from "./snapshot.json";
 
 export const runtime = "nodejs";
@@ -33,20 +39,24 @@ export const runtime = "nodejs";
 // first visitor after expiry still gets an instant (stale) response.
 const CDN_CACHE = "public, max-age=0, s-maxage=86400, stale-while-revalidate=604800";
 
+// Snapshot-fallback TTL: much shorter, so a primed key is picked up within
+// minutes. Still long enough that a load spike can't turn a cache miss into a
+// per-request Redis stampede (the CDN absorbs it between revalidations).
+const CDN_CACHE_MISS = "public, max-age=0, s-maxage=600, stale-while-revalidate=86400";
+
 export async function GET() {
   // DB down: serve the baked snapshot (already in wire form) instead of fanning
   // out aggregates to a dead index.
   if (QUERYING_DISABLED) {
     return Response.json(snapshot, { headers: { "cache-control": CDN_CACHE } });
   }
-  try {
-    const wire = encodeExamplesWire(await getExamplesData());
-    return Response.json(wire, { headers: { "cache-control": CDN_CACHE } });
-  } catch (e) {
-    // Never cache a failure - let the next request retry against Redis.
-    return Response.json(
-      { error: (e as Error).message },
-      { status: 502, headers: { "cache-control": "no-store" } },
-    );
+  // Single Redis GET, never a compute. `readExamplesCache()` returns null on a
+  // miss / corrupt key / Redis error - all of which fall back to the snapshot.
+  const data = await readExamplesCache();
+  if (!data) {
+    return Response.json(snapshot, { headers: { "cache-control": CDN_CACHE_MISS } });
   }
+  return Response.json(encodeExamplesWire(data), {
+    headers: { "cache-control": CDN_CACHE },
+  });
 }
