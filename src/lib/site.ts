@@ -15,6 +15,7 @@ import {
   type Comparison,
   type ExampleGroup,
 } from "./examples";
+import { SEO_TREND_GROUPS } from "./seo-terms";
 import { TIER1_SLUGS, TIER3_SLUGS, COMPARE_NOINDEX_SLUGS } from "./tiers";
 
 /** Canonical production origin (no trailing slash). */
@@ -83,10 +84,19 @@ export function comparisonSlug(terms: string[]): string {
   return terms.map(termToSlug).join("-vs-");
 }
 
-/** Every distinct catalog term that gets its own /trends/[term] page. */
+/** The full set of term groups that get /trends/[term] pages: the gallery
+ *  catalog (EXAMPLE_GROUPS) PLUS the SEO-only groups (SEO_TREND_GROUPS) that we
+ *  deliberately keep out of the /examples gallery and its examples:v* cache (see
+ *  seo-terms.ts for why). The gallery page and the examples-data cache still read
+ *  EXAMPLE_GROUPS directly, so they are unaffected by anything in SEO_TREND_GROUPS
+ *  - only the trend-page surface below sees the merged list. */
+const TREND_GROUPS: ExampleGroup[] = [...EXAMPLE_GROUPS, ...SEO_TREND_GROUPS];
+
+/** Every distinct catalog term that gets its own /trends/[term] page: every
+ *  group term (gallery + SEO-only) plus every comparison term, deduped. */
 export function allTrendTerms(): string[] {
   const set = new Set<string>();
-  for (const g of EXAMPLE_GROUPS) for (const t of g.terms) set.add(t);
+  for (const g of TREND_GROUPS) for (const t of g.terms) set.add(t);
   for (const c of COMPARISONS) for (const t of c.terms) set.add(t);
   return [...set];
 }
@@ -173,9 +183,11 @@ export function allComparisonSlugs(): string[] {
  * long-tail /trends + /compare pages discovered and ranked. */
 
 /** The catalog group a term belongs to (first match), or undefined for terms
- *  that only exist inside a comparison pair. */
+ *  that only exist inside a comparison pair. Searches TREND_GROUPS so SEO-only
+ *  terms also resolve to their group and get a "More from <title>" siblings
+ *  block on their trend page. */
 export function groupOfTerm(term: string): ExampleGroup | undefined {
-  return EXAMPLE_GROUPS.find((g) => g.terms.includes(term));
+  return TREND_GROUPS.find((g) => g.terms.includes(term));
 }
 
 /** A small, stable hash of a string → non-negative int, for deterministic
