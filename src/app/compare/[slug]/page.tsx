@@ -26,6 +26,7 @@ import { StaticTrend } from "@/app/components/StaticTrend";
 import { JsonLd } from "@/app/components/JsonLd";
 import { LandingHeader, LandingFooter } from "@/app/components/LandingChrome";
 import { OutboundLink } from "@/app/components/OutboundLink";
+import { RedisSearchCTA } from "@/app/components/RedisSearchCTA";
 
 // Rendered on demand from live Upstash Redis Search (via the `@upstash/redis`
 // SDK), then CDN-cached - we don't prerender at build time (the index refreshes
@@ -203,6 +204,10 @@ export default async function ComparePage({
           </Link>
         </div>
       </div>
+
+      {/* The conversion pitch: an organic visitor just saw a live Redis Search
+          comparison, so make the docs/repo path impossible to miss. */}
+      <RedisSearchCTA location="compare_page" subject="This comparison" />
 
       {/* the story */}
       {curated?.story && (

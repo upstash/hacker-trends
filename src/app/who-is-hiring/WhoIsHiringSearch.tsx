@@ -31,6 +31,7 @@ import { JobsGalleries } from "./JobsGalleries";
 import { useJobSeries } from "./useJobSeries";
 import { useJobComments } from "./useJobComments";
 import { QUERYING_DISABLED } from "@/lib/maintenance";
+import { trackOutbound } from "@/lib/analytics";
 
 export function WhoIsHiringSearch() {
   // Top-level state the chart + chips drive. Held here so a click on a gallery
@@ -200,7 +201,17 @@ export function WhoIsHiringSearch() {
           </a>{" "}
           thread where each top-level comment is one job posting. Chart how often
           a language, tool or work-style shows up across those postings - a live
-          read on what the tech job market actually asks for.
+          read on what the tech job market actually asks for, every bar a single{" "}
+          <a
+            href="https://upstash.com/docs/redis/search"
+            target="_blank"
+            rel="noreferrer"
+            className="text-[color:var(--hn-orange)] whitespace-nowrap"
+            onClick={() => trackOutbound("upstash", "jobs_hub_pitch")}
+          >
+            Upstash Redis Search
+          </a>{" "}
+          query.
         </p>
       </div>
 

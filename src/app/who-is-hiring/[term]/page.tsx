@@ -39,6 +39,7 @@ import {
   JobsToolCta,
 } from "../JobsLandingChrome";
 import { JsonLd } from "@/app/components/JsonLd";
+import { RedisSearchCTA } from "@/app/components/RedisSearchCTA";
 
 // Rendered on demand from live Upstash Redis Search (via the `@upstash/redis`
 // SDK), then CDN-cached - we don't prerender at build time (the index refreshes
@@ -180,6 +181,10 @@ export default async function WhoIsHiringTermPage({
           bar.
         </p>
       </div>
+
+      {/* The conversion pitch: these job-trend pages are pure SEO surface, so
+          give the organic reader a clear path to the Upstash docs/repo. */}
+      <RedisSearchCTA location="jobs_term_page" subject="This hiring chart" />
 
       {/* the REAL postings, server-rendered (not the client drill-down): this
           month's, then the most-discussed. Indexable content a job-seeker wants. */}

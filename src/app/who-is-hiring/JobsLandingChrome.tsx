@@ -9,6 +9,7 @@
  */
 
 import Link from "next/link";
+import { OutboundLink } from "@/app/components/OutboundLink";
 
 export function JobsLandingHeader({ crumb }: { crumb?: string }) {
   return (
@@ -61,6 +62,13 @@ export function JobsLandingFooter() {
       <div className="flex flex-wrap gap-x-4 gap-y-1">
         <Link href="/who-is-hiring">Who Is Hiring? Search</Link>
         <Link href="/">Search all of Hacker News</Link>
+        <OutboundLink
+          destination="upstash"
+          location="jobs_landing_footer"
+          href="https://upstash.com/docs/redis/search"
+        >
+          Upstash Redis Search
+        </OutboundLink>
         <a
           href="https://news.ycombinator.com/submitted?id=whoishiring"
           target="_blank"

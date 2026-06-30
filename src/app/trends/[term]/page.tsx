@@ -33,6 +33,7 @@ import { StaticTrend } from "@/app/components/StaticTrend";
 import { JsonLd } from "@/app/components/JsonLd";
 import { LandingHeader, LandingFooter } from "@/app/components/LandingChrome";
 import { OutboundLink } from "@/app/components/OutboundLink";
+import { RedisSearchCTA } from "@/app/components/RedisSearchCTA";
 
 // Rendered on demand from live Upstash Redis Search (via the `@upstash/redis`
 // SDK), then cached by the CDN. We do NOT prerender at build time: the index is
@@ -192,6 +193,10 @@ export default async function TrendPage({
           </Link>
         </div>
       </div>
+
+      {/* The conversion pitch: this organic visitor just saw a live Redis Search
+          chart, so make the path to the docs/repo impossible to miss. */}
+      <RedisSearchCTA location="trends_page" />
 
       {/* analysis - model-authored prose for the top terms; the unique,
           non-templated content that makes this page worth indexing on its own */}
