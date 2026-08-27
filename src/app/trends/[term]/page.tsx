@@ -124,6 +124,7 @@ export default async function TrendPage({
         description: `Monthly count of Hacker News posts and comments mentioning "${term}", ${HISTORY_FROM_YEAR}–${HISTORY_TO_YEAR}.`,
         url: abs(path),
         creator: { "@type": "Organization", name: "Upstash", url: "https://upstash.com" },
+        license: "https://github.com/upstash/hacker-trends/blob/main/LICENSE",
         temporalCoverage: `${HISTORY_FROM_YEAR}/${HISTORY_TO_YEAR}`,
         isAccessibleForFree: true,
       },

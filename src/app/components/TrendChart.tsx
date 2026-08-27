@@ -16,7 +16,7 @@ const PAD_B = 24;
 const YEAR_MS = 365.25 * 24 * 3600 * 1000;
 
 // Preset view windows. `years` is how far back from the latest data the X-axis
-// starts; `null` is the full 2007→2026 span. This only reframes the *rendered*
+// starts; `null` is the full 2007→present span. This only reframes the *rendered*
 // axis - the underlying 30-day slot grid (trend-time.ts) is untouched, so a
 // click still maps to the same `?from=&to=` bucket regardless of zoom.
 const WINDOWS: { label: string; years: number | null }[] = [
@@ -271,7 +271,7 @@ export function TrendChart({ series, range, onSelectRange, loading }: Props) {
               data-active={winIdx === i}
               title={
                 w.years == null
-                  ? "show the full 2007→2026 span"
+                  ? "show the full 2007→present span"
                   : `zoom to the last ${w.label}`
               }
               onClick={() => setWinIdx(i)}

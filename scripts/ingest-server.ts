@@ -66,12 +66,19 @@ const HN_SCHEMA = s.object({
 const hnHandle = redis.search.index({ name: INDEX_NAME, schema: HN_SCHEMA });
 
 async function ensureIndex(): Promise<void> {
+  // DESCRIBE first: duplicate CREATE now returns "Search entry should have an
+  // initialized schema" instead of the old "already exists" error.
+  const existing = await hnHandle.describe();
+  if (existing) {
+    console.log(`index "${INDEX_NAME}" already exists, skipping create`);
+    return;
+  }
   try {
     await redis.search.createIndex({ name: INDEX_NAME, dataType: "hash", prefix: "hn:", schema: HN_SCHEMA });
     console.log(`index "${INDEX_NAME}" created`);
   } catch (e) {
     const msg = (e as Error).message ?? String(e);
-    if (/already exists/i.test(msg)) console.log(`index "${INDEX_NAME}" already exists, skipping create`);
+    if (/already exists|initialized schema/i.test(msg)) console.log(`index "${INDEX_NAME}" already exists, skipping create`);
     else throw e;
   }
 }

@@ -2,7 +2,7 @@ import { SLOTS, slotOf } from "./trend-time";
 
 /**
  * Build SVG line/area paths for an OG card that mirrors the on-page TrendChart:
- * each term's sparse buckets are densified to the full 2007→2026 slot grid,
+ * each term's sparse buckets are densified to the full 2007→present slot grid,
  * scaled to a shared peak, and emitted as a smooth-ish polyline + filled area.
  * Returns plain path strings + the peak point so the .tsx can render it inside
  * Satori (which supports basic <svg> primitives but no React hooks).

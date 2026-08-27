@@ -117,6 +117,7 @@ export default async function WhoIsHiringTermPage({
         description: `Monthly count of how often "${term}" appears in Hacker News 'Who is hiring?' job postings, 2011 onward, with a sample of the real postings.`,
         url: abs(path),
         creator: { "@type": "Organization", name: "Upstash", url: "https://upstash.com" },
+        license: "https://github.com/upstash/hacker-trends/blob/main/LICENSE",
         temporalCoverage: "2011/2026",
         isAccessibleForFree: true,
       },

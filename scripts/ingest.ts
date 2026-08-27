@@ -39,30 +39,43 @@ const INDEX_NAME = "hn";
  * exist. Sortable numeric fields use F64; DATE/KEYWORD fields are marked FAST so
  * histograms, sorts, and $terms aggregations work.
  */
+const HN_SCHEMA = s.object({
+  // Headline text for stories/jobs/polls. Empty for comments.
+  title: s.string(),
+  // Body text for comments + Ask HN posts. HTML stripped, capped ~1500 chars.
+  text: s.string(),
+  by: s.keyword(),        // KEYWORD FAST for $terms
+  type: s.keyword(),      // story | comment | poll | job
+  time: s.date().fast(),  // DATE FAST for histogram + sort
+  score: s.number("F64"), // story upvotes, 0 for comments
+  ndesc: s.number("F64"), // descendants / comment count
+  parent: s.number("F64"),// parent story id for comments
+});
+
 async function ensureIndex(): Promise<void> {
+  // Do not use CREATE as the existence probe. Upstash changed the duplicate
+  // CREATE error from "already exists" to "Search entry should have an
+  // initialized schema" in June 2026, which made every scheduled ingest abort
+  // before its first write. DESCRIBE is the stable, read-only existence check.
+  const handle = redis.search.index({ name: INDEX_NAME, schema: HN_SCHEMA });
+  const existing = await handle.describe();
+  if (existing) {
+    console.log(`index "${INDEX_NAME}" already exists, skipping create`);
+    return;
+  }
+
   try {
     await redis.search.createIndex({
       name: INDEX_NAME,
       dataType: "hash",
       prefix: "hn:",
-      schema: s.object({
-        // Headline text for stories/jobs/polls. Empty for comments.
-        title: s.string(),
-        // Body text for comments + Ask HN posts. HTML stripped, capped ~1500 chars.
-        text: s.string(),
-        by: s.keyword(),        // KEYWORD FAST for $terms
-        type: s.keyword(),      // story | comment | poll | job
-        time: s.date().fast(),  // DATE FAST for histogram + sort
-        score: s.number("F64"), // story upvotes, 0 for comments
-        ndesc: s.number("F64"), // descendants / comment count
-        parent: s.number("F64"),// parent story id for comments
-      }),
+      schema: HN_SCHEMA,
     });
     console.log(`index "${INDEX_NAME}" created`);
   } catch (e) {
     const msg = (e as Error).message ?? String(e);
-    // Already-created index is fine, we only need to guarantee it exists.
-    if (/already exists/i.test(msg)) {
+    // A concurrent creator between DESCRIBE and CREATE is also harmless.
+    if (/already exists|initialized schema/i.test(msg)) {
       console.log(`index "${INDEX_NAME}" already exists, skipping create`);
     } else {
       throw e;
@@ -302,6 +315,130 @@ async function ingestMonth(year: string, month: string) {
   );
 }
 
+type HnApiItem = {
+  id: number;
+  type?: string;
+  by?: string;
+  time?: number;
+  title?: string;
+  text?: string;
+  url?: string;
+  score?: number;
+  descendants?: number;
+  parent?: number;
+  deleted?: boolean;
+  dead?: boolean;
+};
+
+const LIVE_FETCH_CONCURRENCY = 64;
+const MAX_LIVE_DELTA = 250_000;
+
+async function fetchJsonWithRetry<T>(url: string, tries = 4): Promise<T> {
+  let last: unknown;
+  for (let attempt = 1; attempt <= tries; attempt++) {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+      return (await res.json()) as T;
+    } catch (e) {
+      last = e;
+      if (attempt < tries) await new Promise((r) => setTimeout(r, 250 * attempt));
+    }
+  }
+  throw last;
+}
+
+function apiItemToHash(item: HnApiItem | null): Record<string, string | number> | null {
+  if (!item?.type || !item.time) return null;
+  const type = TYPE_NAMES.indexOf(item.type as (typeof TYPE_NAMES)[number]);
+  if (type < 0) return null;
+  return rowToHash({
+    id: item.id,
+    type,
+    by: item.by ?? null,
+    time: item.time * 1000,
+    title: item.title ?? null,
+    text: item.text ?? null,
+    url: item.url ?? null,
+    score: item.score ?? null,
+    descendants: item.descendants ?? null,
+    parent: item.parent ?? null,
+    deleted: Number(!!item.deleted),
+    dead: Number(!!item.dead),
+  });
+}
+
+/**
+ * Fill the gap between the latest indexed item and HN's live max item.
+ *
+ * The monthly HuggingFace archive is still the efficient authoritative bulk
+ * source, but it stopped updating for five days in August 2026. The old cron
+ * could therefore be green while serving stale data. Fetching only the ID tail
+ * from HN's official Firebase API makes each normal daily run small (~10-15k
+ * IDs) and keeps freshness independent of an upstream archive pause.
+ */
+async function ingestLiveDelta(): Promise<void> {
+  const index = redis.search.index({ name: INDEX_NAME, schema: HN_SCHEMA });
+  const [rows, maxId] = await Promise.all([
+    index.query({ orderBy: { time: "DESC" }, limit: 1 }),
+    fetchJsonWithRetry<number>("https://hacker-news.firebaseio.com/v0/maxitem.json"),
+  ]);
+  const newest = rows[0] as { key?: string; data?: { id?: string | number } } | undefined;
+  const latestId = Number(newest?.data?.id ?? newest?.key?.replace(/^hn:/, ""));
+  if (!Number.isFinite(latestId)) throw new Error("could not determine latest indexed HN id");
+
+  const delta = maxId - latestId;
+  if (delta <= 0) {
+    console.log(`[live] already caught up (indexed=${latestId}, HN max=${maxId})`);
+    return;
+  }
+  if (delta > MAX_LIVE_DELTA) {
+    throw new Error(
+      `[live] refusing ${delta.toLocaleString()}-ID delta (limit ${MAX_LIVE_DELTA.toLocaleString()}); backfill the missing monthly archive first`,
+    );
+  }
+
+  console.log(`[live] filling IDs ${latestId + 1}..${maxId} (${delta.toLocaleString()}) from HN Firebase…`);
+  const t0 = Date.now();
+  let written = 0;
+  let skipped = 0;
+
+  for (let first = latestId + 1; first <= maxId; first += BATCH_SIZE) {
+    const last = Math.min(maxId, first + BATCH_SIZE - 1);
+    const items = new Array<HnApiItem | null>(last - first + 1);
+    let cursor = 0;
+    await Promise.all(
+      Array.from({ length: Math.min(LIVE_FETCH_CONCURRENCY, items.length) }, async () => {
+        while (cursor < items.length) {
+          const i = cursor++;
+          items[i] = await fetchJsonWithRetry<HnApiItem | null>(
+            `https://hacker-news.firebaseio.com/v0/item/${first + i}.json`,
+          );
+        }
+      }),
+    );
+
+    const commands: unknown[][] = [];
+    for (const item of items) {
+      const h = apiItemToHash(item);
+      if (!h) {
+        skipped++;
+        continue;
+      }
+      const args: (string | number)[] = [`hn:${h.id}`];
+      for (const [k, v] of Object.entries(h)) args.push(k, v);
+      commands.push(["hset", ...args]);
+    }
+    await flushBatch(commands);
+    written += commands.length;
+  }
+
+  const elapsed = (Date.now() - t0) / 1000;
+  console.log(
+    `[live] DONE written=${written.toLocaleString()} skipped=${skipped.toLocaleString()} in ${elapsed.toFixed(1)}s`,
+  );
+}
+
 // Catch unhandled rejections from the inflight pipeline promises so a single
 // transient error doesn't tear the whole process down. flushBatch already
 // retries on transients, so reaching here means the month-level await also
@@ -365,8 +502,17 @@ async function main() {
   // Single month (the daily cron path): exit non-zero if it ultimately fails so
   // CI surfaces a persistent outage instead of silently leaving the data stale.
   if (args.length === 2) {
-    const ok = await ingestMonthWithRetry(args[0], args[1].padStart(2, "0"));
+    const year = args[0];
+    const month = args[1].padStart(2, "0");
+    const ok = await ingestMonthWithRetry(year, month);
     if (!ok) process.exit(1);
+
+    // Only the current-month cron path needs the live tail. Historical manual
+    // backfills stay deterministic and use the archive alone.
+    const now = new Date();
+    const currentYear = String(now.getUTCFullYear());
+    const currentMonth = String(now.getUTCMonth() + 1).padStart(2, "0");
+    if (year === currentYear && month === currentMonth) await ingestLiveDelta();
     return;
   }
 

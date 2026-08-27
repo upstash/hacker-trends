@@ -9,7 +9,7 @@
  * sparkline, with year-axis labels.
  */
 
-import { MIN_MS, MAX_MS, MONTH_MS, SLOTS, slotOf } from "@/lib/trend-time";
+import { MIN_MS, MAX_MS, SLOTS, slotOf } from "@/lib/trend-time";
 
 type MonthBucket = { key: number; docCount: number };
 
@@ -24,7 +24,11 @@ const VIEW_H = 240;
 const PAD_T = 12;
 const PAD_B = 22;
 
-const YEAR_TICKS = [2008, 2011, 2014, 2017, 2020, 2023, 2026];
+const END_YEAR = new Date(MAX_MS).getUTCFullYear();
+const YEAR_TICKS = Array.from(
+  { length: Math.floor((END_YEAR - 2008) / 3) + 1 },
+  (_, i) => 2008 + i * 3,
+);
 
 const xOfMs = (ms: number) => ((ms - MIN_MS) / (MAX_MS - MIN_MS)) * VIEW_W;
 const slotCenterX = (i: number) => ((i + 0.5) / SLOTS) * VIEW_W;

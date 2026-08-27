@@ -13,10 +13,10 @@ export type HiringThread = {
 };
 
 /** The most recent month present in the manifest (data-freshness marker). */
-export const JOBS_LATEST_MONTH = "2026-06";
+export const JOBS_LATEST_MONTH = "2026-08";
 
 /** Total job postings indexed across all threads. */
-export const JOBS_TOTAL_POSTS = 93683;
+export const JOBS_TOTAL_POSTS = 94259;
 
 /** Median job postings per healthy month (>= 30 posts). */
 export const JOBS_MEDIAN_POSTS = 480;
@@ -921,6 +921,16 @@ export const WHO_IS_HIRING_THREADS: HiringThread[] = [
     "month": "2026-06",
     "id": 48357725,
     "posts": 329
+  },
+  {
+    "month": "2026-07",
+    "id": 48747976,
+    "posts": 311
+  },
+  {
+    "month": "2026-08",
+    "id": 49156683,
+    "posts": 265
   }
 ];
 

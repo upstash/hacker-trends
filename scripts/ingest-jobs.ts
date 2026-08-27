@@ -137,6 +137,13 @@ const hnSource = redis.search.index({
  * and SCOREFUNC all work against them.
  */
 export async function ensureJobsIndex(): Promise<{ created: boolean }> {
+  // DESCRIBE first: duplicate CREATE now returns "Search entry should have an
+  // initialized schema" instead of the old "already exists" error.
+  const existing = await jobsIndexHandle.describe();
+  if (existing) {
+    console.log(`index "${JOBS_INDEX}" already exists, skipping create`);
+    return { created: false };
+  }
   try {
     await redis.search.createIndex({
       name: JOBS_INDEX,
@@ -156,7 +163,7 @@ export async function ensureJobsIndex(): Promise<{ created: boolean }> {
     return { created: true };
   } catch (e) {
     const msg = (e as Error).message ?? String(e);
-    if (/already exists/i.test(msg)) {
+    if (/already exists|initialized schema/i.test(msg)) {
       console.log(`index "${JOBS_INDEX}" already exists, skipping create`);
       return { created: false };
     }
@@ -325,6 +332,44 @@ function threadsInRange(from: string, to: string): HiringThread[] {
 
 const LATEST = WHO_IS_HIRING_THREADS[WHO_IS_HIRING_THREADS.length - 1];
 
+/** Discover a newly-posted monthly thread so the daily cron does not require a
+ * code change on the first of every month. The checked-in manifest remains the
+ * historical source for page labels and full backfills; this only fills a
+ * missing single-month cron target. */
+async function discoverHiringThread(month: string): Promise<HiringThread | null> {
+  const match = /^(\d{4})-(0[1-9]|1[0-2])$/.exec(month);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const monthIndex = Number(match[2]) - 1;
+  const monthName = new Date(Date.UTC(year, monthIndex, 1)).toLocaleString("en-US", {
+    month: "long",
+    timeZone: "UTC",
+  });
+  const title = `Ask HN: Who is hiring? (${monthName} ${year})`;
+  const url = new URL("https://hn.algolia.com/api/v1/search");
+  url.searchParams.set("query", title);
+  url.searchParams.set("tags", "story");
+  url.searchParams.set("hitsPerPage", "20");
+
+  const search = await fetch(url);
+  if (!search.ok) throw new Error(`thread discovery failed: Algolia ${search.status}`);
+  const body = (await search.json()) as {
+    hits?: Array<{ author?: string; title?: string; objectID?: string }>;
+  };
+  const hit = body.hits?.find(
+    (h) => h.author === "whoishiring" && h.title?.toLowerCase() === title.toLowerCase(),
+  );
+  const id = Number(hit?.objectID);
+  if (!Number.isFinite(id)) return null;
+
+  const itemRes = await fetch(`https://hacker-news.firebaseio.com/v0/item/${id}.json`);
+  if (!itemRes.ok) throw new Error(`thread discovery failed: Firebase ${itemRes.status}`);
+  const item = (await itemRes.json()) as { kids?: number[] } | null;
+  const thread = { month, id, posts: item?.kids?.length ?? 0 };
+  console.log(`discovered ${month} hiring thread ${id} (${thread.posts} postings)`);
+  return thread;
+}
+
 async function main() {
   const args = process.argv.slice(2);
   const flags = new Set(args.filter((a) => a.startsWith("--")));
@@ -367,6 +412,10 @@ async function main() {
     mode = `range ${positional[0]}..${positional[1]}`;
   } else if (positional.length === 1) {
     targets = WHO_IS_HIRING_THREADS.filter((t) => t.month === positional[0]);
+    if (targets.length === 0) {
+      const discovered = await discoverHiringThread(positional[0]);
+      if (discovered) targets = [discovered];
+    }
     mode = `month ${positional[0]}`;
   } else {
     // Default: validate the latest month only (the safe slice).
@@ -375,6 +424,15 @@ async function main() {
   }
 
   if (targets.length === 0) {
+    const now = new Date();
+    const currentMonth = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+    // The official thread is sometimes posted hours/days into a new month. A
+    // missing current-month thread should not block the main ingest or caches;
+    // tomorrow's run will discover it automatically.
+    if (positional.length === 1 && positional[0] === currentMonth) {
+      console.log(`no official hiring thread for ${currentMonth} yet; skipping hnjobs refresh`);
+      return;
+    }
     console.error(`no hiring threads matched (${mode}). Known months span ${WHO_IS_HIRING_THREADS[0]?.month}..${LATEST?.month}.`);
     process.exit(1);
   }

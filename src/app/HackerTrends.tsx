@@ -147,6 +147,10 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
   // link), not a user-initiated search - skip logging it so the GA `search`
   // event counts what people actually look up, not every page open.
   const firstSearch = useRef(true);
+  // Analytics has its own stable-term debounce. The result search is intentionally
+  // responsive, but recording every intermediate prefix ("a", "an", "ant"...)
+  // made GA's search/compare reports mostly keyboard telemetry.
+  const lastAnalyticsTermsKey = useRef("");
   const [searching, setSearching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Whether the result list is expanded past the first PREVIEW_ROWS.
@@ -179,8 +183,9 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
   const activeTerms = filterActive
     ? allTerms.filter((t) => t.toLowerCase() === termFilter!.toLowerCase())
     : allTerms;
-  // Stable string key for the effects (avoids re-firing on array identity).
+  // Stable string keys for the effects (avoids re-firing on array identity).
   const termsKey = activeTerms.join("|");
+  const queryTermsKey = allTerms.join("|");
 
   const fromIso = range ? new Date(range.fromMs).toISOString() : undefined;
   const toIso = range ? new Date(range.toMs).toISOString() : undefined;
@@ -260,25 +265,21 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
       setDocs([]);
       setExpanded(false);
       lastTermsKey.current = termsKey;
-      // Log the search (and, when several terms, the comparison) - but not the
-      // initial URL-seeded load. `allTerms` is the full term-set the user sees;
-      // `terms` may be a single-term subset when the "only show <term>" filter
-      // is on, which isn't what we want to report as the search.
-      if (firstSearch.current) {
-        firstSearch.current = false;
-      } else if (allTerms.length > 0) {
-        const label = allTerms.join(" vs ");
-        track("search", {
-          terms: label,
-          term_count: allTerms.length,
-          sort,
-        });
-        if (allTerms.length > 1)
-          track("compare", { terms: label, term_count: allTerms.length });
-      }
     }
+
+    const queryTerms = queryTermsKey ? queryTermsKey.split("|") : [];
+    let shouldTrack = false;
+    if (firstSearch.current) {
+      firstSearch.current = false;
+      lastAnalyticsTermsKey.current = queryTermsKey;
+    } else {
+      shouldTrack =
+        queryTerms.length > 0 && lastAnalyticsTermsKey.current !== queryTermsKey;
+    }
+
     setSearching(true);
     const ctrl = new AbortController();
+    let analyticsTimer: ReturnType<typeof setTimeout> | undefined;
     const t = setTimeout(() => {
       Promise.all(
         terms.map((term) =>
@@ -298,8 +299,23 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
           const merged = mergeDocs(lists, sort);
           setDocs(merged);
           setSearching(false);
-          if (merged.length === 0)
-            track("zero_results", { terms: terms.join(" vs "), sort });
+          if (shouldTrack) {
+            // Wait until the term set has stayed unchanged after results arrive.
+            // Effect cleanup cancels this when the user types another character.
+            analyticsTimer = setTimeout(() => {
+              const label = queryTerms.join(" vs ");
+              track("search", {
+                terms: label,
+                term_count: queryTerms.length,
+                sort,
+              });
+              if (queryTerms.length > 1) {
+                track("compare", { terms: label, term_count: queryTerms.length });
+              }
+              if (merged.length === 0) track("zero_results", { terms: label, sort });
+              lastAnalyticsTermsKey.current = queryTermsKey;
+            }, 750);
+          }
         })
         .catch((e) => {
           if (!ctrl.signal.aborted && e?.name !== "AbortError") {
@@ -310,9 +326,10 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
     }, 120);
     return () => {
       clearTimeout(t);
+      if (analyticsTimer) clearTimeout(analyticsTimer);
       ctrl.abort();
     };
-  }, [termsKey, sort, fromIso, toIso, commentsOnly]);
+  }, [termsKey, queryTermsKey, sort, fromIso, toIso, commentsOnly]);
 
   /* ---- chart series ------------------------------------------------ */
   const series: Series[] = useMemo(

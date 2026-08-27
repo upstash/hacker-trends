@@ -47,7 +47,7 @@ export function LandingFooter() {
       </div>
       <p className="mt-2">
         Hacker Trends charts how often any term appears across ~45M Hacker News
-        posts and comments (2007–2026). A demo built on Upstash Redis Search.
+        posts and comments (2007–present). A demo built on Upstash Redis Search.
       </p>
     </footer>
   );
