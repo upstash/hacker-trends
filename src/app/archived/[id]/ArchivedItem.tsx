@@ -33,7 +33,7 @@ function timeAgo(iso: string | null): string {
   if (d < 30) return `${d} day${d === 1 ? "" : "s"} ago`;
   const mo = Math.floor(d / 30);
   if (mo < 12) return `${mo} month${mo === 1 ? "" : "s"} ago`;
-  const y = Math.floor(d / 365);
+  const y = Math.max(1, Math.floor(d / 365));
   return `${y} year${y === 1 ? "" : "s"} ago`;
 }
 
