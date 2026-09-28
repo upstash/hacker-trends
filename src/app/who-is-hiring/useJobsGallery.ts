@@ -8,10 +8,10 @@
  * `{ key, docCount }[]` map, and hands cards a `lookupPart(part)`. Every card
  * shares this single fetch instead of each firing its own aggregate fan-out.
  *
- * The fetch is best-effort: if the JSON route 502s or is missing, `lookupPart`
- * returns `undefined` and the card falls back to a live per-card aggregate
- * (useJobSeries-style). So the gallery still works with no precomputed dataset,
- * just slower on the first paint.
+ * The fetch is best-effort: if the JSON route fails or serves an empty
+ * fallback, `lookupPart` returns `undefined` and the card renders flat. Cards
+ * never fall back to live aggregates (that fan-out is what the dataset exists
+ * to prevent); clicking a card still loads it into the big chart.
  *
  * The fetch lives at MODULE scope (a shared promise), not inside the effect.
  * That's deliberate: the previous per-instance `useRef` guard plus an
@@ -57,9 +57,12 @@ function loadGalleryDataset(): Promise<void> {
       if (!r.ok) throw new Error(`examples.json -> ${r.status}`);
       const wire = (await r.json()) as JobsGalleryWire;
       if ((wire as { error?: string }).error) throw new Error("dataset error");
-      cachedTerms = decodeJobsGalleryWire(wire);
+      // An empty snapshot fallback is "unavailable", not a set of zero cards.
+      cachedTerms = wire.terms && Object.keys(wire.terms).length > 0
+        ? decodeJobsGalleryWire(wire)
+        : null;
     } catch {
-      // Leave cachedTerms null; cards fall back to live aggregates.
+      // Leave cachedTerms null; cards render flat.
       cachedTerms = null;
     } finally {
       settled = true;
@@ -68,7 +71,9 @@ function loadGalleryDataset(): Promise<void> {
   return inflight;
 }
 
-export function useJobsGallery(): GalleryDataset {
+/** `enabled` false skips the fetch entirely (the big chart only needs the
+ *  dataset while live querying is off). */
+export function useJobsGallery(enabled = true): GalleryDataset {
   // Seed from the module cache so a navigation BACK to the page paints the
   // gallery on the FIRST render (no fetch, no blank flash) when the dataset has
   // already loaded earlier this session.
@@ -78,6 +83,7 @@ export function useJobsGallery(): GalleryDataset {
   const [ready, setReady] = useState(settled);
 
   useEffect(() => {
+    if (!enabled) return;
     let alive = true;
     // `loadGalleryDataset()` returns the shared promise - already-resolved when
     // the dataset loaded earlier - so this `.then` runs once as a microtask and
@@ -92,7 +98,7 @@ export function useJobsGallery(): GalleryDataset {
     return () => {
       alive = false;
     };
-  }, []);
+  }, [enabled]);
 
   return useMemo(
     () => ({

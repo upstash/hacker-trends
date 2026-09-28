@@ -12,21 +12,23 @@
  *
  * The slug carries OR-group series too (an `ai|ml|llm` part is slugged with its
  * `|` collapsed); we resolve the slug back to its term list from the curated
- * comparison set when it's one of ours, else split an ad-hoc `a-vs-b` slug.
+ * comparison set when it's one of ours, else split an ad-hoc `a-vs-b` slug of
+ * up to MAX_SERIES known landing terms (anything else 404s; see slug.ts).
  */
 
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { abs, comparisonSlug, slugToTerm, termToSlug } from "@/lib/site";
+import { abs, comparisonSlug, termToSlug } from "@/lib/site";
 import {
   jobsComparisonSeo,
   jobsComparisonQuestionSeo,
   hasCuratedJobsComparison,
-  jobsDisplayTerm,
 } from "@/lib/jobs-seo";
-import { comparisonTermSets, COMPARISONS } from "@/lib/jobs-gallery";
+import { COMPARISONS } from "@/lib/jobs-gallery";
 import { getJobsComparisonLanding } from "@/lib/jobs-landing-data";
+import { jobsMetadata } from "../../_seo/meta";
+import { seriesLabel, termsForSlug } from "./slug";
 import { JobsLandingChart } from "../../JobsLandingChart";
 import {
   JobsLandingHeader,
@@ -36,35 +38,14 @@ import {
 import { JsonLd } from "@/app/components/JsonLd";
 import { colorAt } from "@/lib/jobs-trends";
 
-// Rendered on demand from live Upstash Redis Search (via the `@upstash/redis`
-// SDK), then CDN-cached - we don't prerender at build time (the index refreshes
-// out of band, and prerendering every slug would fan out hundreds of SDK queries
-// during the build). Matches the prior `fetch(..., {cache:"no-store"})` behavior
-// that already kept this route dynamic.
-export const dynamic = "force-dynamic";
+// ISR, like the term pages: rendered on first request, cached, refreshed at
+// most once a day; nothing prerendered at build. See [term]/page.tsx.
+export const dynamic = "force-static";
+export const revalidate = 86400;
 export const dynamicParams = true;
 
 export function generateStaticParams() {
-  return comparisonTermSets().map((terms) => ({ slug: comparisonSlug(terms) }));
-}
-
-/** Resolve a slug to its ordered series list: a curated comparison if a gallery
- *  story matches, else split an ad-hoc `a-vs-b-vs-c` slug and de-slug each part. */
-function termsForSlug(slug: string): string[] {
-  const curated = COMPARISONS.find((c) => comparisonSlug(c.terms) === slug);
-  if (curated) return curated.terms;
-  return slug
-    .split("-vs-")
-    .map((p) => slugToTerm(p))
-    .filter(Boolean);
-}
-
-/** Display label for one series string: capitalized, with an OR-group collapsed
- *  to its parts joined by " / " ("ai|ml|llm" reads "AI / ML / LLM"). */
-function seriesLabel(s: string): string {
-  return s.includes("|")
-    ? s.split("|").map((p) => jobsDisplayTerm(p.trim())).join(" / ")
-    : jobsDisplayTerm(s);
+  return [];
 }
 
 /** The SEO copy for a slug: the question copy when this is a curated gallery
@@ -81,28 +62,17 @@ export async function generateMetadata({
 }): Promise<Metadata> {
   const { slug } = await params;
   const terms = termsForSlug(slug);
-  if (terms.length < 2) return {};
+  if (!terms) return {};
   const seo = seoFor(slug, terms);
-  const path = `/who-is-hiring/compare/${comparisonSlug(terms)}`;
   const card = COMPARISONS.find((c) => comparisonSlug(c.terms) === slug);
-  return {
-    title: { absolute: seo.title },
+  // Every gallery comparison is curated (question copy); ad-hoc slugs that fall
+  // through to the template are noindex,follow.
+  return jobsMetadata({
+    title: seo.title,
     description: seo.description,
-    alternates: { canonical: abs(path) },
-    // Every gallery comparison is curated (question copy); ad-hoc slugs that fall
-    // through to the template are noindex,follow.
-    robots:
-      card || hasCuratedJobsComparison(slug)
-        ? undefined
-        : { index: false, follow: true },
-    openGraph: {
-      title: seo.title,
-      description: seo.description,
-      url: abs(path),
-      type: "article",
-    },
-    twitter: { title: seo.title, description: seo.description },
-  };
+    path: `/who-is-hiring/compare/${comparisonSlug(terms)}`,
+    noindex: !(card || hasCuratedJobsComparison(slug)),
+  });
 }
 
 export default async function WhoIsHiringComparePage({
@@ -112,7 +82,7 @@ export default async function WhoIsHiringComparePage({
 }) {
   const { slug } = await params;
   const terms = termsForSlug(slug);
-  if (terms.length < 2) notFound();
+  if (!terms) notFound();
 
   const seo = seoFor(slug, terms);
   const path = `/who-is-hiring/compare/${comparisonSlug(terms)}`;
@@ -120,8 +90,8 @@ export default async function WhoIsHiringComparePage({
   const labels = terms.map(seriesLabel);
   const vs = labels.join(" vs ");
 
-  // All page data, server-side.
-  const { perSeries } = await getJobsComparisonLanding(terms, 3);
+  // All page data, server-side, at render/revalidate time.
+  const { series, perSeries } = await getJobsComparisonLanding(terms, 3);
 
   // Cross-links to a few other comparison stories (skip this one).
   const otherComparisons = COMPARISONS.filter(
@@ -155,7 +125,7 @@ export default async function WhoIsHiringComparePage({
       </div>
 
       {/* Big, obvious path into the interactive tool. */}
-      <JobsToolCta label={`Compare ${vs} in the Who Is Hiring? tool`} />
+      <JobsToolCta label={`Compare ${vs} in the Who Is Hiring? tool`} terms={terms} />
 
       {/* legend */}
       <div className="px-3 pt-3 flex flex-wrap gap-x-5 gap-y-1 text-[12px]">
@@ -174,7 +144,7 @@ export default async function WhoIsHiringComparePage({
           this comparison. Opens on raw counts; flip to share % to see each
           side's slice, narrow the window, or click a month for the postings. */}
       <div className="px-3 pt-3">
-        <JobsLandingChart initialTerms={terms} />
+        <JobsLandingChart initialTerms={terms} initialSeries={series} />
         <p className="text-[11px] text-[color:var(--hn-subtle)] mt-2 max-w-[760px] leading-relaxed">
           Each calendar month since 2011 as one bar. Switch to share % to stack
           the bands to 100% and see each side&rsquo;s slice of the Who is hiring?

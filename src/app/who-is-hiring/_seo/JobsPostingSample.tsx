@@ -16,28 +16,19 @@
 import Link from "next/link";
 import type { JSX } from "react";
 import type { JobPosting } from "@/lib/jobs-landing-data";
+import { termRegex } from "@/lib/jobs-trends";
 
 /** Same peach highlight the main search + drill-down use. */
 const MARK = { background: "#ffe1cc", color: "#000", padding: 0 } as const;
 
-/** Regex-escaped, whitespace-split query tokens (drops `|` OR-group joins). */
-function tokens(q: string): string[] {
-  return q
-    .replace(/\|/g, " ")
-    .trim()
-    .split(/\s+/)
-    .map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
-    .filter(Boolean);
-}
-
-/** Wrap each matched token in the peach mark (server-rendered, so the match is
- *  visible in the crawlable HTML too). */
+/** Wrap each whole-word match in the peach mark (server-rendered, so the match
+ *  is visible in the crawlable HTML too). Whole words only, so "java" never
+ *  lights up inside "javascript"; an OR-group term is split on `|`. */
 function highlight(text: string, q: string): (JSX.Element | string)[] | string {
-  const t = tokens(q);
-  if (t.length === 0 || !text) return text;
-  const re = new RegExp(`(${t.join("|")})`, "gi");
+  const re = termRegex(q);
+  if (!re || !text) return text;
   return text.split(re).map((p, i) =>
-    re.test(p) ? (
+    i % 2 === 1 ? (
       <mark key={i} style={MARK}>
         {p}
       </mark>

@@ -5,10 +5,10 @@
  * index went down). Run with the local .env present:  bun run scripts/dump-jobs-gallery.ts
  */
 import { writeFileSync } from "node:fs";
-import { getJobsGalleryData } from "@/lib/jobs-gallery-data";
+import { computeJobsGalleryData } from "@/lib/jobs-gallery-data";
 import { encodeJobsGalleryWire } from "@/lib/jobs-gallery-wire";
 
-const data = await getJobsGalleryData({ fresh: true });
+const { data } = await computeJobsGalleryData();
 const wire = encodeJobsGalleryWire(data);
 
 const parts = Object.keys(wire.terms);

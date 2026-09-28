@@ -2,6 +2,9 @@
 // The monthly "Ask HN: Who is hiring?" threads, discovered from the Upstash
 // `hn` Search index, with each thread's top-level comment count (= the number
 // of job postings that month). Re-run the script to refresh after a new month.
+// The daily Action discovers a new month's thread on its own (ingest-jobs.ts
+// `discoverHiringThread`) without updating this file, so every reader treats a
+// month missing here as "unknown", never an error.
 
 export type HiringThread = {
   /** "YYYY-MM" of the thread's post date. */
@@ -13,10 +16,10 @@ export type HiringThread = {
 };
 
 /** The most recent month present in the manifest (data-freshness marker). */
-export const JOBS_LATEST_MONTH = "2026-08";
+export const JOBS_LATEST_MONTH = "2026-09";
 
 /** Total job postings indexed across all threads. */
-export const JOBS_TOTAL_POSTS = 94259;
+export const JOBS_TOTAL_POSTS = 94559;
 
 /** Median job postings per healthy month (>= 30 posts). */
 export const JOBS_MEDIAN_POSTS = 480;
@@ -931,6 +934,11 @@ export const WHO_IS_HIRING_THREADS: HiringThread[] = [
     "month": "2026-08",
     "id": 49156683,
     "posts": 265
+  },
+  {
+    "month": "2026-09",
+    "id": 49522897,
+    "posts": 300
   }
 ];
 

@@ -27,13 +27,17 @@
  * transition (no per-frame JS). A debounced hover + click streams that segment's
  * postings into the drill-down panel below.
  *
+ * The in-progress current month is drawn in the pale tint (its thread is still
+ * collecting postings), so a low count reads as "so far" rather than a cliff.
+ * Segments are focusable buttons: Tab to one to preview it, Enter/Space pins it.
+ *
  * GAP-FREE rendering also covers sub-pixel seams: each segment carries an inline
  * same-color `box-shadow` half-pixel bleed and the row is on its own
  * (`translateZ(0)`) layer, so no thin white hairlines show between adjacent bars
  * at common zoom levels.
  */
 
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   buildColumns,
   columnShares,
@@ -43,6 +47,31 @@ import {
 } from "@/lib/jobs-trends";
 
 const WINDOWS: WindowKey[] = ["all", "10y", "5y", "1y"];
+
+const MONTHS = [
+  "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+const NARROW = "(max-width: 640px)";
+const subscribeNarrow = (cb: () => void) => {
+  const mq = window.matchMedia(NARROW);
+  mq.addEventListener("change", cb);
+  return () => mq.removeEventListener("change", cb);
+};
+
+/** The chart window: the user's pick, else a default that fits the screen
+ *  ("all" draws ~190 ~2px columns on a phone, so narrow screens open on 5y).
+ *  The server renders "all"; a phone switches right after hydration. */
+export function useChartWindow(): [WindowKey, (w: WindowKey) => void] {
+  const narrow = useSyncExternalStore(
+    subscribeNarrow,
+    () => window.matchMedia(NARROW).matches,
+    () => false,
+  );
+  const [picked, setPicked] = useState<WindowKey | null>(null);
+  return [picked ?? (narrow ? "5y" : "all"), setPicked];
+}
 
 /** What a hovered/clicked segment hands back to the drill-down (T09/T10). */
 export type SegmentHit = {
@@ -88,6 +117,9 @@ type Props = {
    *  caller changes. */
   selected?: LatchKey | null;
   loading?: boolean;
+  /** friendly message when some or all series failed to load. */
+  error?: string | null;
+  onRetry?: () => void;
   height?: number;
 };
 
@@ -103,6 +135,8 @@ function JobsStackedBarsInner({
   onSelect,
   selected,
   loading,
+  error,
+  onRetry,
   height = 380,
 }: Props) {
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -154,6 +188,25 @@ function JobsStackedBarsInner({
     };
   };
 
+  const select = (hit: SegmentHit) => {
+    // Only self-latch when the parent isn't driving it.
+    if (selected === undefined) {
+      setClicked({ seriesIndex: hit.seriesIndex, year: hit.year, month: hit.month });
+    }
+    onSelect?.(hit);
+  };
+
+  const errorNote = error ? (
+    <span className="text-red-600">
+      {error}
+      {onRetry && (
+        <button type="button" onClick={onRetry} className="ml-1 underline">
+          retry
+        </button>
+      )}
+    </span>
+  ) : null;
+
   const scheduleHover = (hit: SegmentHit) => {
     if (!onHover) return;
     if (hoverTimer.current) clearTimeout(hoverTimer.current);
@@ -196,6 +249,7 @@ function JobsStackedBarsInner({
           </div>
         )}
         <div className="flex items-center gap-3">
+          {anyData && errorNote && <span className="text-[11px]">{errorNote}</span>}
           <div className="hn-tabs flex items-center gap-1">
             {WINDOWS.map((w) => (
               <button
@@ -222,7 +276,7 @@ function JobsStackedBarsInner({
         )}
         {!anyData && !loading ? (
           <div className="absolute inset-0 flex items-center justify-center text-[12px] text-[color:var(--hn-subtle)]">
-            no job-post mentions in this window
+            {errorNote ?? "no job-post mentions in this window"}
           </div>
         ) : (
           <div className="jobs-bars flex h-full items-end">
@@ -238,11 +292,13 @@ function JobsStackedBarsInner({
                   ? 100
                   : 0
                 : (col.total / maxTotal) * 100;
+              const period = `${MONTHS[col.month]} ${col.year}${col.partial ? " so far" : ""}`;
               return (
                 <div
                   key={col.idx}
                   className="flex h-full flex-col justify-end"
                   style={{ flexBasis: 0, flexGrow: 1, minWidth: 0 }}
+                  title={col.partial ? `${period} (month in progress)` : undefined}
                 >
                   {/* Outer wrapper carries the column height; the inner `fill`
                       holds the stacked segments. */}
@@ -262,22 +318,25 @@ function JobsStackedBarsInner({
                           latched.seriesIndex === si &&
                           latched.year === col.year &&
                           latched.month === col.month;
+                        // The in-progress month is drawn in the pale tint.
+                        const base = col.partial ? paleColor(s.color) : s.color;
                         return (
                           <div
-                            key={s.label}
+                            key={si}
                             className="jobs-seg"
+                            role="button"
+                            tabIndex={0}
+                            aria-label={`${s.label}, ${period}: ${hit.value.toLocaleString()} postings`}
+                            aria-pressed={isLatched}
                             data-latched={isLatched || undefined}
                             onMouseEnter={() => scheduleHover(hit)}
-                            onClick={() => {
-                              // Only self-latch when the parent isn't driving it.
-                              if (selected === undefined) {
-                                setClicked({
-                                  seriesIndex: si,
-                                  year: col.year,
-                                  month: col.month,
-                                });
+                            onFocus={() => scheduleHover(hit)}
+                            onClick={() => select(hit)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" || e.key === " ") {
+                                e.preventDefault();
+                                select(hit);
                               }
-                              onSelect?.(hit);
                             }}
                             // The base color + its pale (HSB-lightened) variant
                             // ride as CSS vars so the hover/latch rules in
@@ -288,8 +347,8 @@ function JobsStackedBarsInner({
                             style={
                               {
                                 height: `${share * 100}%`,
-                                "--seg": s.color,
-                                "--seg-pale": paleColor(s.color),
+                                "--seg": base,
+                                "--seg-pale": paleColor(base),
                               } as React.CSSProperties
                             }
                           />

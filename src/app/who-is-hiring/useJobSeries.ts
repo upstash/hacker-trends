@@ -1,23 +1,27 @@
 "use client";
 
 /**
- * Data hook for the big chart: turn the user's compare strings into binned
- * per-month `SeriesData`, scoped to job postings (scope=jobs).
+ * Data hook for the big chart: turn the committed compare strings into binned
+ * per-month `SeriesData`, scoped to job postings.
  *
  * This is the thin IO layer over the pure transforms in `src/lib/jobs-trends.ts`
  * (which carry all the testable logic). Per series:
- *   1. split on `|` into OR-group parts (`parseParts`)
- *   2. aggregate each part live (scope=jobs) -> raw 30d `$dateHistogram` buckets
- *   3. fold each part's buckets into calendar months (`binMonths`) and sum the
- *      parts bucket-for-bucket (`sumByMonth`) into one month map
- *   4. carry the all-time total (shown on the compare chip)
+ *   1. normalize + dedupe the chips (`seriesSlots`: case-folded, empties and
+ *      duplicates dropped), so colors match the chips and keys are unique
+ *   2. aggregate each OR-group part (calendar-month buckets on `hnjobs`) and sum
+ *      the parts month-for-month (`binMonths` + `sumByMonth`)
+ *   3. carry the all-time total (shown on the compare chip)
  *
- * Requests are aborted when the comparison changes so a fast retype never lets a
- * stale response overwrite a newer one.
+ * Series settle INDEPENDENTLY: one failed term leaves its band empty and
+ * surfaces a friendly error with a retry, instead of blanking the comparison.
+ * While a new comparison loads, bands already known from the previous result
+ * stay on screen. Server-built `initial` series (landing pages) are used as-is,
+ * so the first paint needs no client fetch. Requests are aborted when the
+ * comparison changes so a stale response never overwrites a newer one.
  */
 
-import { useEffect, useMemo, useState } from "react";
-import { aggregate } from "@/lib/hn-search";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { aggregate, ApiError, friendlyError } from "@/lib/hn-search";
 import { drillIndex } from "@/lib/jobs-index";
 import { QUERYING_DISABLED } from "@/lib/maintenance";
 import { useJobsGallery } from "./useJobsGallery";
@@ -27,6 +31,7 @@ import {
   sumByMonth,
   monthTotal,
   colorAt,
+  seriesSlots,
   type RawBucket,
   type SeriesData,
 } from "@/lib/jobs-trends";
@@ -44,88 +49,130 @@ function emptySeries(label: string, i: number): SeriesData {
 }
 
 /** Aggregate one series string (summing its `|` OR-group parts) into a single
- *  calendar-month map keyed by `monthKey`. */
+ *  calendar-month map keyed by `monthKey`. Any failed part fails the series (a
+ *  partial sum would be a silently wrong band). */
 async function aggregateSeries(
   label: string,
   signal: AbortSignal,
 ): Promise<Map<string, number>> {
   const parts = parseParts(label);
   if (parts.length === 0) return new Map();
-  // Same gate the drill-down uses: aggregate against the dedicated `hnjobs`
-  // postings index when it's ready (no scope arm needed, ~3x faster), else the
-  // shared `hn` index narrowed by `scope=jobs`. Flipping NEXT_PUBLIC_JOBS_INDEX_READY
-  // moves the chart + gallery + drill-down together with no further code change.
+  // Same gate the drill-down uses: the dedicated `hnjobs` postings index when
+  // it's ready (no scope arm), else the shared `hn` index narrowed by scope=jobs.
   const { index, scope } = drillIndex();
   const perPart = await Promise.all(
     parts.map(async (p) => {
       const { buckets } = await aggregate({ q: p, scope, index, signal });
-      // `Bucket` already carries {key, docCount}; reuse it as a RawBucket.
       return binMonths(buckets as RawBucket[]);
     }),
   );
   return sumByMonth(perPart);
 }
 
-export function useJobSeries(terms: string[]): {
+type Loaded = {
+  key: string;
+  /** the retry attempt it answers (a retry invalidates the failed result). */
+  attempt: number;
+  series: SeriesData[];
+  error: string | null;
+  /** every series failed because live querying is switched off. */
+  disabled: boolean;
+};
+
+const keyOf = (labels: string[]) => labels.join("§");
+
+export type JobSeriesResult = {
   series: SeriesData[];
   loading: boolean;
+  /** friendly message when at least one series failed (its band is empty). */
   error: string | null;
-} {
-  // Join the trimmed, non-empty terms into a stable effect key.
-  const cleaned = useMemo(
-    () => terms.map((t) => t.trim()).filter(Boolean),
-    [terms],
+  retry: () => void;
+};
+
+export function useJobSeries(terms: string[], initial?: SeriesData[]): JobSeriesResult {
+  const cleaned = useMemo(() => seriesSlots(terms).series, [terms]);
+  const key = keyOf(cleaned);
+
+  // Server-built series (landing pages): used verbatim for their own key, so
+  // the page's first paint needs no fetch. Ignored when they carry no data (a
+  // degraded server render) so the client fetches instead.
+  const [seed] = useState<Loaded | null>(() =>
+    initial && initial.some((s) => s.total > 0)
+      ? {
+          key: keyOf(initial.map((s) => s.label)),
+          attempt: 0,
+          series: initial,
+          error: null,
+          disabled: false,
+        }
+      : null,
   );
-  const key = cleaned.join("§");
 
-  // `loaded` holds the result for the CURRENT key (null while a fetch is in
-  // flight or before the first one resolves). Keying the result by `key` lets us
-  // DERIVE `loading`/`error`/`series` instead of synchronously calling setState
-  // inside the effect (which React's purity rules forbid). The empty-terms case
-  // needs no fetch at all, so it never touches the effect.
-  const [loaded, setLoaded] = useState<{ key: string; series: SeriesData[]; error: string | null } | null>(null);
-
-  // The CDN-cached gallery dataset (per-part month histograms). While live
-  // querying is disabled, the chart is assembled from THIS instead of a live
-  // aggregate, so a gallery-card click still draws its bars. (Cheap, module-
-  // cached; the hook must be called unconditionally.)
-  const dataset = useJobsGallery();
+  // `loaded` holds the latest fetched result. Keying it by `key` lets us DERIVE
+  // `loading`/`error`/`series` instead of calling setState inside the effect.
+  const [loaded, setLoaded] = useState<Loaded | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  const retry = useCallback(() => setAttempt((n) => n + 1), []);
 
   useEffect(() => {
     if (QUERYING_DISABLED) return; // no live aggregate while the DB is down
     if (cleaned.length === 0) return;
+    if (attempt === 0 && seed?.key === key) return;
     const ctrl = new AbortController();
-    (async () => {
-      try {
-        const out = await Promise.all(
-          cleaned.map(async (label, i) => {
-            const byMonth = await aggregateSeries(label, ctrl.signal);
-            return {
-              label,
-              parts: parseParts(label),
-              color: colorAt(i),
-              byMonth,
-              total: monthTotal(byMonth),
-            } satisfies SeriesData;
-          }),
-        );
-        if (ctrl.signal.aborted) return;
-        setLoaded({ key, series: out, error: null });
-      } catch (e) {
-        if (ctrl.signal.aborted || (e as Error).name === "AbortError") return;
-        setLoaded({ key, series: [], error: (e as Error).message });
-      }
-    })();
-    return () => ctrl.abort();
+    // Start on the next tick: the hub's first (hydration) render may be
+    // replaced at once by its URL-seeded terms, and this cleanup then cancels
+    // the default comparison before any request goes out.
+    const t = setTimeout(async () => {
+      const settled = await Promise.allSettled(
+        cleaned.map((label) => aggregateSeries(label, ctrl.signal)),
+      );
+      if (ctrl.signal.aborted) return;
+      const reasons = settled
+        .filter((r): r is PromiseRejectedResult => r.status === "rejected")
+        .map((r) => r.reason);
+      const series = cleaned.map((label, i) => {
+        const r = settled[i];
+        const byMonth = r.status === "fulfilled" ? r.value : new Map<string, number>();
+        return {
+          label,
+          parts: parseParts(label),
+          color: colorAt(i),
+          byMonth,
+          total: monthTotal(byMonth),
+        } satisfies SeriesData;
+      });
+      setLoaded({
+        key,
+        attempt,
+        series,
+        error: reasons.length ? friendlyError(reasons[0]) : null,
+        disabled:
+          reasons.length === cleaned.length &&
+          reasons.every((e) => e instanceof ApiError && e.code === "disabled"),
+      });
+    }, 0);
+    return () => {
+      clearTimeout(t);
+      ctrl.abort();
+    };
     // cleaned is derived from key; key alone is the stable dependency.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key]);
+  }, [key, attempt]);
 
-  // Disabled path: build each series from the cached gallery dataset. A series
-  // string is split on `|`; each part's cached month-map is summed (a missing
-  // part just contributes nothing - there's no live fallback while down).
+  const current =
+    loaded?.key === key && loaded.attempt === attempt
+      ? loaded
+      : attempt === 0 && seed?.key === key
+        ? seed
+        : null;
+
+  // Kill switch (build-time, or the API answering "disabled"): assemble the
+  // series from the CDN-cached gallery dataset instead. Only then is the
+  // dataset fetched at all.
+  const offline = QUERYING_DISABLED || !!current?.disabled;
+  const dataset = useJobsGallery(offline);
   const cachedSeries = useMemo(() => {
-    if (!QUERYING_DISABLED || !dataset.ready) return null;
+    if (!offline || !dataset.ready) return null;
     return cleaned.map((label, i) => {
       const parts = parseParts(label);
       const maps = parts.map((p) => {
@@ -142,24 +189,24 @@ export function useJobSeries(terms: string[]): {
       } satisfies SeriesData;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dataset, key]);
+  }, [offline, dataset, key]);
 
-  // The loaded result is only valid if it's for the current key (a stale result
-  // from a previous comparison is ignored until the new fetch resolves).
-  const current = loaded && loaded.key === key ? loaded : null;
-  const error = QUERYING_DISABLED ? null : current?.error ?? null;
-  // Loading whenever there are terms but no data for this key yet. While disabled
-  // that means "until the cached gallery dataset has settled".
-  const loading = QUERYING_DISABLED
+  const loading = offline
     ? cleaned.length > 0 && !dataset.ready
     : cleaned.length > 0 && current === null;
+  const error = offline ? null : current?.error ?? null;
 
-  // While the first real response is loading, render zero-height placeholder
-  // series so the chart frame + colors are stable (no layout shift, no flash).
+  // While a new comparison loads, keep every band we already know (from the
+  // previous result) and zero-fill the new ones, so the chart doesn't blank.
   const safe = useMemo(() => {
-    const loadedSeries = QUERYING_DISABLED ? cachedSeries ?? [] : current?.series ?? [];
-    return loadedSeries.length ? loadedSeries : cleaned.map((t, i) => emptySeries(t, i));
-  }, [current, cleaned, cachedSeries]);
+    if (offline) return cachedSeries ?? cleaned.map((t, i) => emptySeries(t, i));
+    if (current) return current.series;
+    const prev = [...(loaded?.series ?? []), ...(seed?.series ?? [])];
+    return cleaned.map((label, i) => {
+      const hit = prev.find((s) => s.label === label);
+      return hit ? { ...hit, color: colorAt(i) } : emptySeries(label, i);
+    });
+  }, [offline, cachedSeries, current, loaded, seed, cleaned]);
 
-  return { series: safe, loading, error };
+  return { series: safe, loading, error, retry };
 }

@@ -3,27 +3,28 @@
  * (`/who-is-hiring/[term]`, `/who-is-hiring/compare/[slug]`,
  * `/who-is-hiring/top/[slug]`).
  *
- * The jobs-scoped twin of `landing-data.ts`. Those routes are ISR pages that
- * must be FULLY server-rendered - the trend chart (as static SVG), the headline
- * stats AND a sample of the real job postings have to be in the initial HTML so
- * Google (and a no-JS visitor) sees the actual content, not a client-only chart
- * that hydrates after paint. So everything a landing page shows is computed here
- * at render/revalidate time and handed to the server components.
+ * The jobs-scoped twin of `landing-data.ts`. Those routes are ISR pages
+ * (`revalidate` = 1 day, no build-time prerender): the stats and a sample of the
+ * real job postings are server-rendered into the cached HTML so Google (and a
+ * no-JS visitor) sees the actual content, and the monthly series is handed to the
+ * client chart as initial data. Everything here runs at most once per page per
+ * revalidate window, never per view.
  *
  * Two reads back the page:
  *
- *   1. Monthly histograms (the chart + the stats). One aggregate per OR-group
- *      PART, scope=jobs, folded into calendar months by `binMonths`. We prefer
- *      the shared gallery cache (`getJobsGalleryData` - one GET returns every
- *      gallery part's series) and only fall back to a live aggregate for a part
- *      outside the gallery. The cost is paid at build/revalidate, not per
- *      request (revalidate = 1 day on each route).
+ *   1. Monthly histograms (the chart + the stats), one per OR-group PART. We
+ *      read the CI-primed gallery wire (`readJobsGalleryParts`, one memoized GET
+ *      covering every gallery part) and only aggregate live for a part it does
+ *      not cover (or when the key is missing). Never the full gallery rebuild.
  *
  *   2. A sample of the real postings (the unique, indexable content). A single
- *      SEARCH.QUERY per term, scope=jobs (or the dedicated `hnjobs` index when
- *      it's flagged ready), pulling the most-relevant recent postings that
- *      mention the term, each carrying its poster handle, parent thread id (for
- *      the `/archived/<id>` link) and a text snippet.
+ *      SEARCH.QUERY per term on the jobs index, each carrying its poster handle,
+ *      parent thread id (for the `/archived/<id>` link) and a text snippet.
+ *
+ * When live querying is disabled (`isQueryingDisabled`) the live reads are
+ * skipped, and any render that had to degrade (disabled, a read failed, the
+ * wire key missed) shortens its own ISR lifetime so the full page comes back
+ * within minutes instead of a day.
  *
  * Server-only: it reads the Upstash token. Import from route handlers / server
  * components only, never from a "use client" file.
@@ -31,23 +32,24 @@
 
 import { hnRedis, runAggregate, runSearch } from "@/lib/hn-index";
 import { type HnDoc, type SortMode } from "@/lib/hn-query";
-import { getJobsGalleryData } from "@/lib/jobs-gallery-data";
+import { readJobsGalleryParts } from "@/lib/jobs-gallery-data";
 import { drillIndex } from "@/lib/jobs-index";
+import { isQueryingDisabled } from "@/lib/runtime-flags";
 import {
   parseParts,
+  normalizeSeries,
   binMonths,
   sumByMonth,
   colorAt,
   monthKey,
   monthIndex,
   fromMonthIndex,
+  currentMonthIndex,
+  centeredSnippet,
   type RawBucket,
   type SeriesData,
 } from "@/lib/jobs-trends";
-import {
-  WHO_IS_HIRING_THREADS,
-  JOBS_LATEST_MONTH,
-} from "@/lib/who-is-hiring-data";
+import { WHO_IS_HIRING_THREADS } from "@/lib/who-is-hiring-data";
 
 const HAS_CREDS = !!(
   process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN
@@ -60,27 +62,53 @@ export type MonthCount = { key: number; docCount: number };
  *  backend degrades to an empty page section, never a crash. */
 const redis = HAS_CREDS ? hnRedis() : null;
 
+/** Per-render state: whether live reads are allowed, and whether anything had
+ *  to degrade (so the render can shorten its ISR lifetime). */
+type Ctx = { live: boolean; degraded: boolean };
+
+async function newCtx(): Promise<Ctx> {
+  const live = !!redis && !(await isQueryingDisabled());
+  return { live, degraded: !live };
+}
+
+/** How long a degraded render may be served before ISR retries it. */
+const DEGRADED_REVALIDATE_S = 300;
+
+/** Shorten the current render's ISR lifetime. A fetch with a smaller
+ *  `next.revalidate` than the route's lowers the whole route's revalidate for
+ *  this render (Next's documented per-render opt-in); a PING is the cheapest
+ *  request that carries it, and the data cache dedupes it for its lifetime. */
+async function finish(ctx: Ctx): Promise<void> {
+  if (!ctx.degraded || !process.env.UPSTASH_REDIS_REST_URL) return;
+  try {
+    await fetch(`${process.env.UPSTASH_REDIS_REST_URL}/ping`, {
+      headers: { authorization: `Bearer ${process.env.UPSTASH_REDIS_REST_TOKEN}` },
+      next: { revalidate: DEGRADED_REVALIDATE_S },
+    });
+  } catch {
+    // best effort: worst case the degraded page lives for the normal window
+  }
+}
+
 /* ---------- monthly histograms (chart + stats) ---------------------- */
 
-/** One OR-group part's jobs-scoped monthly histogram. Prefer the shared gallery
- *  cache (one GET for every gallery part), fall back to a live SDK jobs
- *  aggregate for an off-gallery part. */
-async function partBuckets(part: string): Promise<MonthCount[]> {
+/** One OR-group part's jobs-scoped monthly histogram: the primed gallery wire
+ *  first (one memoized GET for every gallery part), else a live aggregate for
+ *  just this part. */
+async function partBuckets(part: string, ctx: Ctx): Promise<MonthCount[]> {
+  const gallery = await readJobsGalleryParts();
+  const cached = gallery?.[part];
+  if (cached && cached.length) return cached;
+  if (!ctx.live) return [];
   try {
-    const gallery = await getJobsGalleryData();
-    const cached = gallery.terms[part];
-    if (cached && cached.length) return cached;
-  } catch {
-    // fall through to live
-  }
-  if (!redis) return [];
-  try {
-    // Same gate the live hooks use: the fast dedicated `hnjobs` index when ready
-    // (no scope arm), else the shared `hn` index narrowed by `scope=jobs`.
+    // Same gate the live hooks use: the dedicated `hnjobs` index when ready (no
+    // scope arm), else the shared `hn` index narrowed by `scope=jobs`.
     const { index, scope } = drillIndex();
-    const agg = await runAggregate(redis, { q: part, scope, index });
+    const agg = await runAggregate(redis!, { q: part, scope, index });
+    if (!gallery) ctx.degraded = true; // wire missing: retry sooner
     return agg.buckets.map((b) => ({ key: b.key, docCount: b.docCount }));
   } catch {
+    ctx.degraded = true;
     return [];
   }
 }
@@ -88,16 +116,17 @@ async function partBuckets(part: string): Promise<MonthCount[]> {
 /** Build one binned, colored `SeriesData` for a series string (summing its `|`
  *  OR-group parts bucket-for-bucket, exactly like the live `useJobSeries` hook
  *  does, but on the server). */
-async function buildSeries(series: string, colorIdx: number): Promise<SeriesData> {
-  const parts = parseParts(series);
+async function buildSeries(series: string, colorIdx: number, ctx: Ctx): Promise<SeriesData> {
+  const label = normalizeSeries(series);
+  const parts = parseParts(label);
   const perPart = await Promise.all(
-    parts.map(async (p) => binMonths((await partBuckets(p)) as RawBucket[])),
+    parts.map(async (p) => binMonths((await partBuckets(p, ctx)) as RawBucket[])),
   );
   const byMonth = sumByMonth(perPart);
   let total = 0;
   for (const v of byMonth.values()) total += v;
   return {
-    label: series,
+    label,
     parts,
     color: colorAt(colorIdx),
     byMonth,
@@ -107,8 +136,8 @@ async function buildSeries(series: string, colorIdx: number): Promise<SeriesData
 
 /** Build the full `SeriesData[]` for a term-set (the chart input), index-aligned
  *  to `terms` so colors match the legend. */
-export async function buildJobSeries(terms: string[]): Promise<SeriesData[]> {
-  return Promise.all(terms.map((t, i) => buildSeries(t, i)));
+async function buildJobSeries(terms: string[], ctx: Ctx): Promise<SeriesData[]> {
+  return Promise.all(terms.map((t, i) => buildSeries(t, i, ctx)));
 }
 
 /* ---------- derived stats ------------------------------------------- */
@@ -122,6 +151,8 @@ export type JobsTermStats = {
   /** the most recent month's count (the freshest bar). */
   latestLabel: string | null;
   latestCount: number;
+  /** the latest month is the in-progress current month (count is so far). */
+  latestPartial: boolean;
   /** first and last calendar year with any mentions. */
   firstYear: number | null;
   lastYear: number | null;
@@ -139,7 +170,7 @@ const MONTH_FULL = [
 ];
 
 /** Latest month-index across all series (the freshest bar). Falls back to the
- *  manifest's newest month when every series is empty. */
+ *  current month when every series is empty. */
 function latestIdx(series: SeriesData[]): number {
   let max = -1;
   for (const s of series)
@@ -148,9 +179,7 @@ function latestIdx(series: SeriesData[]): number {
       const idx = monthIndex(y, m);
       if (idx > max) max = idx;
     }
-  if (max >= 0) return max;
-  const [y, m] = JOBS_LATEST_MONTH.split("-").map(Number);
-  return monthIndex(y, (m ?? 1) - 1);
+  return max >= 0 ? max : currentMonthIndex();
 }
 
 /** Per-series headline stats from its binned month map. `latest*` reports the
@@ -198,6 +227,7 @@ export function statsForSeries(s: SeriesData, latestMonthIdx: number): JobsTermS
     peakCount,
     latestLabel: `${MONTH_ABBR[lm]} ${ly}`,
     latestCount: s.byMonth.get(latestKey) ?? 0,
+    latestPartial: latestMonthIdx === currentMonthIndex(),
     firstYear: first,
     lastYear: last,
   };
@@ -246,18 +276,23 @@ function plain(text: string): string {
     .trim();
 }
 
-/** A readable excerpt: the first `max` chars of the cleaned body, cut on a word
- *  boundary, with an ellipsis when truncated. */
-function excerpt(raw: string, max = 280): string {
-  const text = plain(raw);
-  if (text.length <= max) return text;
-  const cut = text.slice(0, max);
-  const lastSpace = cut.lastIndexOf(" ");
-  return (lastSpace > max * 0.6 ? cut.slice(0, lastSpace) : cut) + "…";
+/** A readable excerpt of the cleaned body, centered on the first whole-word
+ *  match of `term` so the highlighted mention is always in view. */
+function excerpt(raw: string, term: string, max = 280): string {
+  return centeredSnippet(plain(raw), term, max);
+}
+
+/** "YYYY-MM" of a posting: its thread's manifest month, else the posting time
+ *  (a thread the manifest doesn't know yet still gets a label). */
+function postingMonth(d: HnDoc, parent: number | null): string | null {
+  const known = parent != null ? THREAD_MONTH.get(parent) : undefined;
+  if (known) return known;
+  const t = Date.parse(d.time);
+  return Number.isFinite(t) ? new Date(t).toISOString().slice(0, 7) : null;
 }
 
 /** Turn a raw `HnDoc` posting into the trimmed wire shape. */
-function toPosting(d: HnDoc): JobPosting {
+function toPosting(d: HnDoc, term: string): JobPosting {
   const parent = d.parent ?? null;
   // `replies` on the dedicated `hnjobs` index; `ndesc` on the shared `hn` index
   // (always 0 for comments). Only carry a positive count.
@@ -266,8 +301,8 @@ function toPosting(d: HnDoc): JobPosting {
     id: d.id,
     by: d.by,
     parent,
-    month: parent != null ? (THREAD_MONTH.get(parent) ?? null) : null,
-    snippet: excerpt(d.text ?? ""),
+    month: postingMonth(d, parent),
+    snippet: excerpt(d.text ?? "", term),
     ...(replies > 0 ? { replies } : {}),
   };
 }
@@ -279,11 +314,12 @@ function toPosting(d: HnDoc): JobPosting {
 async function fetchPostings(
   part: string,
   opts: { limit: number; from?: string; to?: string; sort?: SortMode },
+  ctx: Ctx,
 ): Promise<HnDoc[]> {
-  if (!redis) return [];
+  if (!ctx.live) return [];
   const { index, scope } = drillIndex();
   try {
-    return await runSearch(redis, {
+    return await runSearch(redis!, {
       q: part,
       scope,
       index,
@@ -293,6 +329,7 @@ async function fetchPostings(
       to: opts.to,
     });
   } catch {
+    ctx.degraded = true;
     return [];
   }
 }
@@ -304,6 +341,7 @@ async function fetchPostings(
  *  section never repeats a posting an earlier one already showed. */
 function collectPostings(
   docs: HnDoc[],
+  term: string,
   limit: number,
   out: JobPosting[],
   seenAuthor: Set<string>,
@@ -312,7 +350,7 @@ function collectPostings(
   for (const d of docs) {
     if (out.length >= limit) break;
     if (seenId.has(d.id)) continue;
-    const p = toPosting(d);
+    const p = toPosting(d, term);
     if (!p.snippet) continue;
     const key = p.by.toLowerCase();
     if (seenAuthor.has(key)) continue;
@@ -333,9 +371,10 @@ const RECENT_FROM = "2024-01-01T00:00:00.000Z";
  * a single company spamming the thread can't fill the sample with near-identical
  * text.
  */
-export async function samplePostings(
+async function samplePostings(
   term: string,
-  limit = 6,
+  limit: number,
+  ctx: Ctx,
 ): Promise<JobPosting[]> {
   const part = parseParts(term)[0] ?? term;
   const out: JobPosting[] = [];
@@ -343,13 +382,13 @@ export async function samplePostings(
   const seenId = new Set<number>();
   // Recent first, then backfill from all-time if the recent window is thin.
   collectPostings(
-    await fetchPostings(part, { limit: limit * 4, from: RECENT_FROM }),
-    limit, out, seenAuthor, seenId,
+    await fetchPostings(part, { limit: limit * 4, from: RECENT_FROM }, ctx),
+    part, limit, out, seenAuthor, seenId,
   );
-  if (out.length < limit) {
+  if (out.length < limit && ctx.live) {
     collectPostings(
-      await fetchPostings(part, { limit: limit * 4 }),
-      limit, out, seenAuthor, seenId,
+      await fetchPostings(part, { limit: limit * 4 }, ctx),
+      part, limit, out, seenAuthor, seenId,
     );
   }
   return out;
@@ -386,10 +425,14 @@ export type JobsTermPostings = {
  *      to the current year and EXCLUDING anything already in `month`. If the
  *      year is thin it broadens to all-time (`popularYear` then null).
  */
-async function termPostings(term: string, latestIdxVal: number): Promise<JobsTermPostings> {
+async function termPostings(
+  term: string,
+  latestIdxVal: number,
+  ctx: Ctx,
+): Promise<JobsTermPostings> {
   const part = parseParts(term)[0] ?? term;
   const { year: ly, month: lm } = fromMonthIndex(latestIdxVal);
-  const monthLabel = `${MONTH_FULL[lm]} ${ly}`;
+  const monthLabel = `${MONTH_FULL[lm]} ${ly}${latestIdxVal === currentMonthIndex() ? " (so far)" : ""}`;
 
   const seenAuthor = new Set<string>();
   const seenId = new Set<number>();
@@ -398,8 +441,8 @@ async function termPostings(term: string, latestIdxVal: number): Promise<JobsTer
   const win = monthIsoWindow(ly, lm);
   const month: JobPosting[] = [];
   collectPostings(
-    await fetchPostings(part, { limit: 24, from: win.from, to: win.to, sort: "discussed" }),
-    5, month, seenAuthor, seenId,
+    await fetchPostings(part, { limit: 24, from: win.from, to: win.to, sort: "discussed" }, ctx),
+    part, 5, month, seenAuthor, seenId,
   );
 
   // 2) Most-discussed this year, excluding the month set. Broaden to all-time if
@@ -408,14 +451,14 @@ async function termPostings(term: string, latestIdxVal: number): Promise<JobsTer
   let popularYear: number | null = ly;
   const popular: JobPosting[] = [];
   collectPostings(
-    await fetchPostings(part, { limit: 50, from: yearFrom, sort: "discussed" }),
-    5, popular, seenAuthor, seenId,
+    await fetchPostings(part, { limit: 50, from: yearFrom, sort: "discussed" }, ctx),
+    part, 5, popular, seenAuthor, seenId,
   );
-  if (popular.length < 3) {
+  if (popular.length < 3 && ctx.live) {
     popularYear = null;
     collectPostings(
-      await fetchPostings(part, { limit: 50, sort: "discussed" }),
-      5, popular, seenAuthor, seenId,
+      await fetchPostings(part, { limit: 50, sort: "discussed" }, ctx),
+      part, 5, popular, seenAuthor, seenId,
     );
   }
 
@@ -427,24 +470,26 @@ async function termPostings(term: string, latestIdxVal: number): Promise<JobsTer
 /** What fraction of a term's postings also mention "remote", as a rough
  *  remote-share signal for job-seekers. Two cheap jobs aggregates (the term, and
  *  the term ANDed with remote via a two-token query) reusing the gallery cache
- *  where possible. Returns null when the term has no postings. */
-export async function remoteShare(term: string): Promise<number | null> {
+ *  where possible. Returns null when the term has no postings or the stat
+ *  couldn't be read live. */
+async function remoteShare(term: string, ctx: Ctx): Promise<number | null> {
   const part = parseParts(term)[0] ?? term;
   const [base, withRemote] = await Promise.all([
-    partBuckets(part),
+    partBuckets(part, ctx),
     (async () => {
-      if (!redis) return [] as MonthCount[];
+      if (!ctx.live) return null;
       try {
         const { index, scope } = drillIndex();
-        const agg = await runAggregate(redis, { q: `${part} remote`, scope, index });
+        const agg = await runAggregate(redis!, { q: `${part} remote`, scope, index });
         return agg.buckets.map((b) => ({ key: b.key, docCount: b.docCount }));
       } catch {
-        return [] as MonthCount[];
+        ctx.degraded = true;
+        return null;
       }
     })(),
   ]);
   const total = base.reduce((a, b) => a + b.docCount, 0);
-  if (total <= 0) return null;
+  if (total <= 0 || !withRemote) return null;
   const remote = withRemote.reduce((a, b) => a + b.docCount, 0);
   return Math.max(0, Math.min(1, remote / total));
 }
@@ -464,13 +509,15 @@ export type JobsTermLanding = {
 
 /** Everything the single-skill page needs, fetched in parallel. */
 export async function getJobsTermLanding(term: string): Promise<JobsTermLanding> {
+  const ctx = await newCtx();
   const [series, remote] = await Promise.all([
-    buildJobSeries([term]),
-    remoteShare(term),
+    buildJobSeries([term], ctx),
+    remoteShare(term, ctx),
   ]);
   const latest = latestIdx(series);
   const stats = statsForSeries(series[0], latest);
-  const postings = await termPostings(term, latest);
+  const postings = await termPostings(term, latest, ctx);
+  await finish(ctx);
   return { term, series, stats, postings, remote };
 }
 
@@ -493,14 +540,16 @@ export async function getJobsComparisonLanding(
   terms: string[],
   postingsPerTerm = 3,
 ): Promise<JobsComparisonLanding> {
-  const series = await buildJobSeries(terms);
+  const ctx = await newCtx();
+  const series = await buildJobSeries(terms, ctx);
   const latest = latestIdx(series);
   const perSeries = await Promise.all(
     series.map(async (s) => ({
       term: s.label,
       stats: statsForSeries(s, latest),
-      postings: await samplePostings(s.label, postingsPerTerm),
+      postings: await samplePostings(s.label, postingsPerTerm, ctx),
     })),
   );
+  await finish(ctx);
   return { terms, series, perSeries };
 }

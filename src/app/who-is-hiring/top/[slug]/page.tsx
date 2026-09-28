@@ -11,7 +11,7 @@
  * the category are all in the initial HTML, so Google indexes the actual content.
  *
  * The slug maps 1:1 to a curated category card, so these are always indexed +
- * in the sitemap; an unknown slug 404s.
+ * in the sitemap; an unknown slug 404s. ISR like the other landing routes.
  */
 
 import type { Metadata } from "next";
@@ -21,10 +21,10 @@ import { abs, termToSlug } from "@/lib/site";
 import {
   jobsCategorySeo,
   categoryCardBySlug,
-  allJobsCategorySlugs,
   jobsDisplayTerm,
 } from "@/lib/jobs-seo";
 import { getJobsComparisonLanding } from "@/lib/jobs-landing-data";
+import { jobsMetadata } from "../../_seo/meta";
 import { JobsLandingChart } from "../../JobsLandingChart";
 import {
   JobsLandingHeader,
@@ -34,15 +34,14 @@ import {
 import { JsonLd } from "@/app/components/JsonLd";
 import { colorAt } from "@/lib/jobs-trends";
 
-// Rendered on demand from live Upstash Redis Search (via the `@upstash/redis`
-// SDK), then CDN-cached - we don't prerender at build time (the index refreshes
-// out of band, and prerendering every slug would fan out hundreds of SDK queries
-// during the build). `dynamicParams = false` still restricts to the known slugs.
-export const dynamic = "force-dynamic";
-export const dynamicParams = false;
+// ISR, like the term pages: rendered on first request, cached, refreshed at
+// most once a day; nothing prerendered at build. Unknown slugs 404 in the page.
+export const dynamic = "force-static";
+export const revalidate = 86400;
+export const dynamicParams = true;
 
 export function generateStaticParams() {
-  return allJobsCategorySlugs().map((slug) => ({ slug }));
+  return [];
 }
 
 export async function generateMetadata({
@@ -54,19 +53,11 @@ export async function generateMetadata({
   const card = categoryCardBySlug(slug);
   if (!card) return {};
   const seo = jobsCategorySeo(card);
-  const path = `/who-is-hiring/top/${slug}`;
-  return {
-    title: { absolute: seo.title },
+  return jobsMetadata({
+    title: seo.title,
     description: seo.description,
-    alternates: { canonical: abs(path) },
-    openGraph: {
-      title: seo.title,
-      description: seo.description,
-      url: abs(path),
-      type: "article",
-    },
-    twitter: { title: seo.title, description: seo.description },
-  };
+    path: `/who-is-hiring/top/${slug}`,
+  });
 }
 
 export default async function WhoIsHiringTopPage({
@@ -83,7 +74,7 @@ export default async function WhoIsHiringTopPage({
   const terms = card.terms;
 
   // Per-term stats + a sample of postings per term, server-side.
-  const { perSeries } = await getJobsComparisonLanding(terms, 2);
+  const { series, perSeries } = await getJobsComparisonLanding(terms, 2);
 
   // The leaderboard: terms ranked by all-time postings, the page's core answer.
   const ranked = [...perSeries].sort((a, b) => b.stats.total - a.stats.total);
@@ -133,7 +124,7 @@ export default async function WhoIsHiringTopPage({
       </div>
 
       {/* Big, obvious path into the interactive tool. */}
-      <JobsToolCta label={`Explore ${card.title} in the Who Is Hiring? tool`} />
+      <JobsToolCta label={`Explore ${card.title} in the Who Is Hiring? tool`} terms={terms} />
 
       {/* leaderboard - the direct, scannable answer to the question */}
       <div className="px-3 pt-4">
@@ -170,7 +161,7 @@ export default async function WhoIsHiringTopPage({
           this category. Opens on raw counts; flip to share % to stack the bands
           to 100% and see each one's slice, or click a month for the postings. */}
       <div className="px-3 pt-4">
-        <JobsLandingChart initialTerms={terms} />
+        <JobsLandingChart initialTerms={terms} initialSeries={series} />
         <p className="text-[11px] text-[color:var(--hn-subtle)] mt-2 max-w-[760px] leading-relaxed">
           Each calendar month since 2011 as one bar. Switch to share % to stack
           the bands to 100% and see each one&rsquo;s slice of the category&rsquo;s

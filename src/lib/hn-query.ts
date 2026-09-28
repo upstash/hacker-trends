@@ -336,17 +336,54 @@ const AGGREGATIONS = {
   by_month: { $dateHistogram: { field: "time", fixedInterval: "30d" } },
 } as const;
 
+/** First calendar month the `hnjobs` month ranges cover (the first hiring
+ *  thread is Apr 2011; starting at Jan keeps the chart's FIRST_YEAR aligned). */
+const JOBS_FIRST_MONTH = 2011 * 12;
+
+/** `$range` bounds on a DATE field are compared in the column's native unit,
+ *  nanoseconds since the epoch (measured: millisecond bounds put every posting
+ *  in the open-ended top bucket). Returned `from`/`to` come back in the same
+ *  unit. */
+const RANGE_NS_PER_MS = 1_000_000;
+
+/**
+ * One `$range` bucket per CALENDAR month over `time`, from Jan 2011 through the
+ * current (in-progress) month. Used only on the `hnjobs` index: a fixed 30d
+ * `$dateHistogram` drifts against calendar months (a bucket starting Mar 27
+ * holds the April thread, some months catch two buckets), and hiring threads
+ * open on the 1st, so the drift moved whole threads into the wrong bar. Exact
+ * `[from, to)` month ranges attribute every posting to its real month and match
+ * the drill-down's calendar-month search window. ~190 ranges, one pass.
+ */
+export function jobsMonthRanges(nowMs = Date.now()): { from: number; to: number }[] {
+  const now = new Date(nowMs);
+  const last = now.getUTCFullYear() * 12 + now.getUTCMonth();
+  const out: { from: number; to: number }[] = [];
+  for (let idx = JOBS_FIRST_MONTH; idx <= last; idx++) {
+    const y = Math.floor(idx / 12);
+    const m = idx % 12;
+    out.push({ from: Date.UTC(y, m, 1) * RANGE_NS_PER_MS, to: Date.UTC(y, m + 1, 1) * RANGE_NS_PER_MS });
+  }
+  return out;
+}
+
+type JobsAggregations = {
+  by_month: { $range: { field: "time"; ranges: { from: number; to: number }[] } };
+};
+
 /** The SDK `aggregate({...})` option object (everything after the index). */
 export type AggregateOptions = {
   filter: Record<string, unknown>;
-  aggregations: typeof AGGREGATIONS;
+  aggregations: typeof AGGREGATIONS | JobsAggregations;
 };
 
 /**
  * Build the SDK `aggregate()` options. Returns the chosen index plus the option
  * object passed straight to `redis.search.index({ name }).aggregate()`. Single
  * source of truth for the aggregate shape: `hn-index.ts` runs it and
- * `aggregateSnippet` renders it.
+ * `aggregateSnippet` renders it. The shared `hn` index keeps its 30d
+ * `$dateHistogram` (the main chart and its caches depend on that shape); only
+ * `hnjobs` uses calendar-month ranges.
  */
 export function buildAggregateOptions(
   opts: AggregateArgsOpts,
@@ -360,7 +397,10 @@ export function buildAggregateOptions(
   const filter = buildFilter(q, from, to, undefined, undefined, {
     scope: onJobsIndex ? undefined : scope,
   });
-  return { index, options: { filter, aggregations: AGGREGATIONS } };
+  const aggregations: AggregateOptions["aggregations"] = onJobsIndex
+    ? { by_month: { $range: { field: "time", ranges: jobsMonthRanges() } } }
+    : AGGREGATIONS;
+  return { index, options: { filter, aggregations } };
 }
 
 /* ---------- SDK code snippets (for the "show the code" panel) -------- */
@@ -492,34 +532,6 @@ export function histogramSnippet(term: string): string {
   );
 }
 
-/** The histogram behind the /who-is-hiring chart: the same date-histogram as
- *  above, but the filter ANDs in the "job postings" scope - comments whose
- *  parent is one of the monthly "Who is hiring?" threads. The ~180 thread ids
- *  are shown as a named list rather than inlined, since that's how you'd
- *  actually write it (and matches what scripts/ingest-jobs.ts produces). */
-export function jobsHistogramSnippet(term: string): string {
-  // Print just the term arm via fmtJs so it can't drift from buildFilter, then
-  // hand-assemble the readable scope arm around it.
-  const termArm = fmtJs({ $or: [{ title: { $eq: term } }, { text: { $eq: term } }] }, 3);
-  return (
-    `const hn = redis.search.index({ name: "hn", schema });\n\n` +
-    `// the monthly "Ask HN: Who is hiring?" threads (one per month since 2011)\n` +
-    `const HIRING_THREADS = [2396027, 2503204, /* …180 more… */];\n\n` +
-    `// per month, count the job postings that mention the term\n` +
-    `const { aggregations } = await hn.aggregate({\n` +
-    `  filter: {\n` +
-    `    $and: [\n` +
-    `      ${termArm},\n` +
-    `      { $or: HIRING_THREADS.map((id) => ({ parent: id })) },\n` +
-    `    ],\n` +
-    `  },\n` +
-    `  aggregations: {\n` +
-    `    by_month: { $dateHistogram: { field: "time", fixedInterval: "30d" } },\n` +
-    `  },\n` +
-    `});`
-  );
-}
-
 /** The `hn.aggregate({...})` SDK call - rendered from the SAME
  *  `buildAggregateOptions` the app executes. We render the shared-`hn` form
  *  (default index, no scope arm) so the panel shows the simplest aggregate. */
@@ -597,17 +609,40 @@ export function mapDocs(rows: unknown): HnDoc[] {
   return out;
 }
 
-/** A single `$dateHistogram` / `$terms` bucket as the SDK returns it. */
-type SdkBucket = { key: unknown; keyAsString?: unknown; docCount?: unknown };
+/** A single `$dateHistogram` / `$range` bucket as the SDK returns it. Range
+ *  buckets carry their `[from, to)` bounds; histogram buckets only a `key`. */
+type SdkBucket = {
+  key: unknown;
+  keyAsString?: unknown;
+  docCount?: unknown;
+  from?: unknown;
+  to?: unknown;
+};
 
+/** Map `by_month` buckets onto `Bucket[]`. A `$range` bucket (the `hnjobs`
+ *  calendar months) is keyed by its `from` bound converted to epoch ms (the 1st
+ *  of the month). Empty months and the open-ended edge buckets the engine adds
+ *  outside the requested ranges are dropped, so the series stays sparse like a
+ *  histogram's. */
 function mapDateBuckets(node: unknown): Bucket[] {
   const buckets = (node as { buckets?: unknown })?.buckets;
   if (!Array.isArray(buckets)) return [];
-  return (buckets as SdkBucket[]).map((b) => ({
-    key: Number(b.key),
-    keyAsString: String(b.keyAsString ?? ""),
-    docCount: Number(b.docCount ?? 0),
-  }));
+  const out: Bucket[] = [];
+  for (const b of buckets as SdkBucket[]) {
+    const docCount = Number(b.docCount ?? 0);
+    if ("from" in b || "to" in b) {
+      if (b.from == null || b.to == null || docCount <= 0) continue;
+      const key = Math.round(Number(b.from) / RANGE_NS_PER_MS);
+      out.push({ key, keyAsString: new Date(key).toISOString(), docCount });
+      continue;
+    }
+    out.push({
+      key: Number(b.key),
+      keyAsString: String(b.keyAsString ?? ""),
+      docCount,
+    });
+  }
+  return out;
 }
 
 /** Map the SDK's structured `aggregate()` result onto `Aggregations`. */
