@@ -1,6 +1,5 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import type { HnDoc } from "@/lib/hn-search";
 import { track } from "@/lib/analytics";
 
@@ -61,40 +60,6 @@ function TimeAgo({
       {label}
     </button>
   );
-}
-
-// Resolved thread titles, cached across rows so re-renders and repeated stories
-// don't refetch. Value is the story `{ id, title }` (or null once we know there
-// isn't one). The edge `op=thread` walks the comment's parents in the index.
-const threadCache = new Map<number, { id: number | null; title: string | null }>();
-
-/** Look up the root story a comment belongs to, for the `on thread "<title>"`
- *  label. Lazy + cached; returns null until resolved. */
-function useThread(commentId: number) {
-  const [thread, setThread] = useState<
-    { id: number | null; title: string | null } | null
-  >(() => threadCache.get(commentId) ?? null);
-  useEffect(() => {
-    // Already resolved (initial state seeded it from the cache) - nothing to do.
-    // Each row has a unique comment id, so the cache can't fill in behind us.
-    if (threadCache.has(commentId)) return;
-    let alive = true;
-    fetch(`/api/hn?op=thread&id=${commentId}`)
-      .then((r) => r.json())
-      .then((j) => {
-        const t = (j?.result ?? { id: null, title: null }) as {
-          id: number | null;
-          title: string | null;
-        };
-        threadCache.set(commentId, t);
-        if (alive) setThread(t);
-      })
-      .catch(() => {});
-    return () => {
-      alive = false;
-    };
-  }, [commentId]);
-  return thread;
 }
 
 export function Results({
@@ -246,9 +211,9 @@ function CommentRow({
   onPickMonth?: (iso: string) => void;
 }) {
   const href = `https://news.ycombinator.com/item?id=${d.id}`;
-  const thread = useThread(d.id);
-  // Link "on thread" at the resolved story once we have it, else the comment's
-  // immediate parent (or itself) so the link still works while it resolves.
+  // `/api/hn` resolves the root story inline with the search; when the parent
+  // walk ran out, link the immediate parent (or the comment itself).
+  const thread = d.thread;
   const threadHref = `https://news.ycombinator.com/item?id=${
     thread?.id ?? d.parent ?? d.id
   }`;

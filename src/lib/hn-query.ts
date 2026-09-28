@@ -9,9 +9,9 @@
  * "show the code" panel renders, so the executed call and the displayed snippet
  * are built from the SAME function and cannot drift.
  *
- * NOTE: these builders run inside the Vercel Edge runtime (the `/api/hn`
- * route via `hn-index.ts`), so keep this module on web-standard APIs only, no
- * Node built-ins.
+ * NOTE: this module is also bundled into the browser (types, `normalizeQuery`,
+ * the snippet builders), so keep it on web-standard APIs only, no Node
+ * built-ins.
  */
 
 import { JOB_THREAD_IDS } from "./who-is-hiring-data";
@@ -57,6 +57,9 @@ export type HnDoc = {
   /** Precomputed direct-children reply count. Only present on `hnjobs` docs
    *  (the drill-down ranks by it); absent/undefined on shared `hn` docs. */
   replies?: number;
+  /** Root story of a comment, resolved server-side by `/api/hn` for comment
+   *  docs on the `hn` index. Absent when the parent walk ran out. */
+  thread?: { id: number; title: string | null };
 };
 
 export type SortMode = "relevance" | "score" | "recent" | "discussed";
@@ -74,6 +77,16 @@ export type Aggregations = {
 };
 
 export type AggResponse = Aggregations & { latencyMs: number };
+
+/**
+ * Canonical form of a user query: trimmed, whitespace collapsed, lowercased.
+ * The index analyzer lowercases both indexed text and query terms (`$eq` and
+ * `$phrase` alike), so case and spacing never change results; normalizing lets
+ * `RUST`, `rust ` and `rust` share one cache entry (Redis, CDN and browser).
+ */
+export function normalizeQuery(q: string): string {
+  return q.trim().replace(/\s+/g, " ").toLowerCase();
+}
 
 /**
  * Tokenize the user query. We split on whitespace AND punctuation so that
