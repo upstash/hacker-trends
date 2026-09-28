@@ -16,11 +16,17 @@ import {
   HISTORY_FROM_YEAR,
   HISTORY_TO_YEAR,
   HISTORY_SPAN_YEARS,
+  DEFAULT_OG_IMAGE,
+  OG_BASE,
+  TWITTER_BASE,
 } from "@/lib/site";
 import { COMPARISONS } from "@/lib/examples";
 import { JsonLd } from "@/app/components/JsonLd";
 import { LandingHeader, LandingFooter } from "@/app/components/LandingChrome";
 import { OutboundLink } from "@/app/components/OutboundLink";
+
+const HOW_OG_DESCRIPTION =
+  "Where the data comes from and how Upstash Redis Search powers the live charts behind Hacker Trends.";
 
 export const metadata: Metadata = {
   title: "How it works",
@@ -28,11 +34,18 @@ export const metadata: Metadata = {
     "How Hacker Trends charts 18 years of Hacker News: where the data comes from, how mention-over-time is measured, and how Upstash Redis Search powers the live date-histograms and search behind every chart.",
   alternates: { canonical: "/how-it-works" },
   openGraph: {
+    ...OG_BASE,
     title: "How Hacker Trends works",
-    description:
-      "Where the data comes from and how Upstash Redis Search powers the live charts behind Hacker Trends.",
+    description: HOW_OG_DESCRIPTION,
     url: "/how-it-works",
     type: "article",
+    images: [DEFAULT_OG_IMAGE],
+  },
+  twitter: {
+    ...TWITTER_BASE,
+    title: "How Hacker Trends works",
+    description: HOW_OG_DESCRIPTION,
+    images: [DEFAULT_OG_IMAGE.url],
   },
 };
 

@@ -16,9 +16,9 @@
  *       the load spike that nearly caused a SEV-1. We do NOT want these ~50 new
  *       SEO terms anywhere near that blob.
  *     - A `/trends/[term]` page, by contrast, computes its histogram with a
- *       single live per-render Upstash aggregate (`getTermLanding`) and is then
- *       CDN-cached per URL. So a new SEO term costs exactly one query on its
- *       first request, amortized by the CDN - no fan-out, no shared cache key.
+ *       single live Upstash aggregate (`getTermLanding`) and is then ISR-cached
+ *       per URL. So a new SEO term costs one query per revalidate window - no
+ *       fan-out, no shared cache key.
  *
  * THEREFORE, hard rules for editing this file:
  *   - DO put new high-volume SEO landing terms here.

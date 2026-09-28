@@ -47,6 +47,21 @@ export const SITE_TAGLINE = "18 years of Hacker News, charted";
 export const SITE_DESCRIPTION =
   "Search 18 years of Hacker News and chart how any topic, tool, or person trended. Overlay terms to compare their rise and fall across 45M posts and comments.";
 
+/** The generic share card (app/opengraph-image.tsx), the default for any page
+ *  without its own. */
+export const DEFAULT_OG_IMAGE = {
+  url: "/opengraph-image",
+  width: 1200,
+  height: 630,
+  alt: `${SITE_NAME}: ${SITE_TAGLINE}`,
+};
+
+/** A page-level `openGraph` / `twitter` object REPLACES the layout's (Next
+ *  doesn't deep-merge them), so every page spreads these to keep og:site_name
+ *  and the large card instead of silently falling back to `summary`. */
+export const OG_BASE = { siteName: SITE_NAME, type: "website" } as const;
+export const TWITTER_BASE = { card: "summary_large_image" } as const;
+
 /** First indexed month and last, kept in sync with trend-time.ts (2007 → 2026). */
 export const HISTORY_FROM_YEAR = 2007;
 export const HISTORY_TO_YEAR = 2026;
@@ -59,7 +74,7 @@ export const HISTORY_SPAN_YEARS = 18;
  *  every deploy - Google learns to distrust always-"now" timestamps. Bump this
  *  when the catalog or the underlying data set is refreshed (alongside
  *  CATALOG_VERSION in examples.ts). */
-export const CONTENT_UPDATED = new Date("2026-06-01T00:00:00Z");
+export const CONTENT_UPDATED = new Date("2026-06-30T00:00:00Z");
 
 /** Build an absolute URL on the canonical origin from a path. */
 export function abs(path: string): string {
@@ -118,11 +133,17 @@ const TERM_BY_SLUG: Map<string, string> = (() => {
 export function slugToTerm(slug: string): string {
   const known = TERM_BY_SLUG.get(slug.toLowerCase());
   if (known) return known;
-  return decodeURIComponent(slug).replace(/-+/g, " ").trim();
+  let raw = slug;
+  try {
+    raw = decodeURIComponent(slug);
+  } catch {
+    // malformed %-escape: use the slug as-is
+  }
+  return raw.replace(/-+/g, " ").trim();
 }
 
 /** True when the slug maps to a curated catalog term (used to decide indexing
- *  + whether to prebuild it). */
+ *  and whether an empty page 404s). */
 export function isKnownTermSlug(slug: string): boolean {
   return TERM_BY_SLUG.has(slug.toLowerCase());
 }

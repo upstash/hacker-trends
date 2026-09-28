@@ -1,7 +1,16 @@
 "use client";
 
 import { useMemo, useRef, useState } from "react";
-import { MIN_MS, MAX_MS, MONTH_MS, SLOTS, slotRange } from "@/lib/trend-time";
+import {
+  MIN_MS,
+  MONTH_MS,
+  SLOTS,
+  rangeLabel,
+  slotLabel,
+  slotOf,
+  slotRange,
+  trendPaths,
+} from "@/lib/trend-time";
 
 /** The lean monthly point the chart plots: only `key` (epoch-ms) + `docCount`
  *  are read by `densify`. Kept loose so BOTH the live aggregate `Bucket[]` (which
@@ -32,6 +41,9 @@ export type Series = {
   text: string;
   color: string;
   buckets: ChartBucket[];
+  /** The series' in-progress slot (drawn dashed, nothing after it). Defaults to
+   *  the current slot; cached gallery data ends where its cache was built. */
+  endSlot?: number;
 };
 
 export type Range = { fromMs: number; toMs: number };
@@ -42,6 +54,9 @@ type Props = {
   onSelectRange: (r: Range | null) => void;
   /** Histograms are in flight, so show a loading state rather than the prompt. */
   loading?: boolean;
+  /** Short inline status (a failed histogram) shown in the footer row, so it
+   *  never shifts the layout. `muted` is the neutral querying-disabled style. */
+  note?: { text: string; muted?: boolean } | null;
 };
 
 /**
@@ -53,7 +68,7 @@ type Props = {
 function densify(buckets: ChartBucket[]): Float64Array {
   const dense = new Float64Array(SLOTS);
   for (const b of buckets) {
-    const slot = Math.round((b.key - MIN_MS) / MONTH_MS);
+    const slot = slotOf(b.key);
     if (slot >= 0 && slot < SLOTS) dense[slot] += b.docCount;
   }
   return dense;
@@ -97,7 +112,7 @@ function buildTicks(minMs: number, maxMs: number): { ms: number; label: string }
   return ticks;
 }
 
-export function TrendChart({ series, range, onSelectRange, loading }: Props) {
+export function TrendChart({ series, range, onSelectRange, loading, note }: Props) {
   const svgRef = useRef<SVGSVGElement | null>(null);
   // While the pointer is held down we track a raw [x0,x1] band in viewBox
   // units; on release it either becomes a selected range or (if it was really
@@ -108,18 +123,24 @@ export function TrendChart({ series, range, onSelectRange, loading }: Props) {
   // to the chart - it reframes the axis without changing the queried data.
   const [winIdx, setWinIdx] = useState(0);
 
-  // The visible slot window [slotLo, SLOTS): always anchored to the latest data
+  // Slots on the axis: through the newest series' in-progress slot, so cached
+  // data that ends a slot early doesn't leave an empty strip on the right.
+  const nSlots = series.length
+    ? Math.min(SLOTS, Math.max(...series.map((s) => (s.endSlot ?? SLOTS - 1) + 1)))
+    : SLOTS;
+
+  // The visible slot window [slotLo, nSlots): always anchored to the latest data
   // on the right, extending `years` back on the left. Boundaries are snapped to
   // the slot grid so the x-scale and the bucket binning stay in lockstep.
   const slotLo = useMemo(() => {
     const years = WINDOWS[winIdx].years;
     if (years == null) return 0;
-    const target = MAX_MS - years * YEAR_MS;
-    return Math.min(SLOTS - 1, Math.max(0, Math.round((target - MIN_MS) / MONTH_MS)));
-  }, [winIdx]);
-  const visSlots = SLOTS - slotLo;
+    const target = MIN_MS + nSlots * MONTH_MS - years * YEAR_MS;
+    return Math.min(nSlots - 1, Math.max(0, Math.round((target - MIN_MS) / MONTH_MS)));
+  }, [winIdx, nSlots]);
+  const visSlots = nSlots - slotLo;
   const viewMinMs = MIN_MS + slotLo * MONTH_MS;
-  const viewMaxMs = MIN_MS + SLOTS * MONTH_MS;
+  const viewMaxMs = MIN_MS + nSlots * MONTH_MS;
 
   /* ---- view-space mappings (all keyed to the current window) -------- */
   const xOf = (ms: number) => ((ms - viewMinMs) / (viewMaxMs - viewMinMs)) * VIEW_W;
@@ -127,11 +148,16 @@ export function TrendChart({ series, range, onSelectRange, loading }: Props) {
   const slotLeftX = (i: number) => ((i - slotLo) / visSlots) * VIEW_W;
   const SLOT_W = VIEW_W / visSlots;
   const slotAt = (x: number) =>
-    Math.max(slotLo, Math.min(SLOTS - 1, slotLo + Math.floor((x / VIEW_W) * visSlots)));
+    Math.max(slotLo, Math.min(nSlots - 1, slotLo + Math.floor((x / VIEW_W) * visSlots)));
 
   const dense = useMemo(
-    () => series.map((s) => ({ s, values: densify(s.buckets) })),
-    [series],
+    () =>
+      series.map((s) => ({
+        s,
+        values: densify(s.buckets),
+        end: Math.min(nSlots - 1, s.endSlot ?? SLOTS - 1),
+      })),
+    [series, nSlots],
   );
 
   // Peak (for Y-scaling) is taken over the *visible* slots only, so zooming into
@@ -140,7 +166,7 @@ export function TrendChart({ series, range, onSelectRange, loading }: Props) {
   const globalMax = useMemo(() => {
     let m = 0;
     for (const d of dense)
-      for (let i = slotLo; i < SLOTS; i++) if (d.values[i] > m) m = d.values[i];
+      for (let i = slotLo; i <= d.end; i++) if (d.values[i] > m) m = d.values[i];
     return m || 1;
   }, [dense, slotLo]);
 
@@ -150,34 +176,31 @@ export function TrendChart({ series, range, onSelectRange, loading }: Props) {
   // Build the area + line path strings once per data/window change.
   const paths = useMemo(
     () =>
-      dense.map(({ s, values }) => {
-        const pts: string[] = [];
-        for (let i = slotLo; i < SLOTS; i++) pts.push(`${slotCenterX(i)},${yOf(values[i])}`);
-        const line = `M${pts.join("L")}`;
-        const base = VIEW_H - PAD_B;
-        const area = `M${slotCenterX(slotLo)},${base}L${pts.join("L")}L${slotCenterX(
-          SLOTS - 1,
-        )},${base}Z`;
-        return { id: s.id, color: s.color, line, area };
-      }),
+      dense.map(({ s, values, end }) => ({
+        id: s.id,
+        color: s.color,
+        ...trendPaths(values, {
+          lo: slotLo,
+          end,
+          x: slotCenterX,
+          y: yOf,
+          base: VIEW_H - PAD_B,
+        }),
+      })),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [dense, globalMax, slotLo],
   );
 
   // Highest point of each series, for the inline colored peak labels. The scan
   // is clamped to the visible window (and, if set, the selected range), so the
-  // marker reports the peak you can actually see.
+  // marker reports the peak you can actually see. The in-progress slot is left
+  // out: a partial count isn't a peak month.
   const peaks = useMemo(() => {
-    const lo = Math.max(
-      slotLo,
-      range ? Math.round((range.fromMs - MIN_MS) / MONTH_MS) : slotLo,
-    );
-    const hi = Math.min(
-      SLOTS,
-      range ? Math.round((range.toMs - MIN_MS) / MONTH_MS) : SLOTS,
-    );
+    const lo = Math.max(slotLo, range ? slotOf(range.fromMs) : slotLo);
+    const rangeHi = range ? Math.ceil((range.toMs - MIN_MS) / MONTH_MS) : nSlots;
     return dense
-      .map(({ s, values }) => {
+      .map(({ s, values, end }) => {
+        const hi = Math.min(rangeHi, end);
         let mi = lo;
         let mv = 0;
         for (let i = lo; i < hi; i++)
@@ -189,7 +212,7 @@ export function TrendChart({ series, range, onSelectRange, loading }: Props) {
       })
       .filter((p) => p.value > 0);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dense, globalMax, range, slotLo]);
+  }, [dense, globalMax, range, slotLo, nSlots]);
 
   const hasData = dense.some((d) => d.values.some((v) => v > 0));
   const ticks = buildTicks(viewMinMs, viewMaxMs);
@@ -242,11 +265,11 @@ export function TrendChart({ series, range, onSelectRange, loading }: Props) {
       ? null
       : {
           xPct: (slotCenterX(hoverSlot) / VIEW_W) * 100,
-          label: new Date(MIN_MS + hoverSlot * MONTH_MS).toISOString().slice(0, 7),
-          rows: dense.map(({ s, values }) => ({
+          label: `${slotLabel(hoverSlot)}${hoverSlot === nSlots - 1 ? " (so far)" : ""}`,
+          rows: dense.map(({ s, values, end }) => ({
             color: s.color,
             text: s.text,
-            count: values[hoverSlot] ?? 0,
+            count: hoverSlot <= end ? values[hoverSlot] ?? 0 : null,
           })),
         };
 
@@ -351,6 +374,18 @@ export function TrendChart({ series, range, onSelectRange, loading }: Props) {
             vectorEffect="non-scaling-stroke"
           />
         ))}
+        {/* the in-progress slot, dashed: a partial count, not a drop */}
+        {paths.map((p) => (
+          <path
+            key={`p-${p.id}`}
+            d={p.partial}
+            fill="none"
+            stroke={p.color}
+            strokeWidth={1.6}
+            strokeDasharray="3 3"
+            vectorEffect="non-scaling-stroke"
+          />
+        ))}
 
         {/* per-series peak markers (colored, sitting on each line's apex) */}
         {hasData &&
@@ -410,7 +445,7 @@ export function TrendChart({ series, range, onSelectRange, loading }: Props) {
               stroke="#bbb"
               vectorEffect="non-scaling-stroke"
             />
-            {dense.map(({ s, values }) => (
+            {dense.map(({ s, values, end }) => hoverSlot <= end && (
               <circle
                 key={`dot-${s.id}`}
                 cx={slotCenterX(hoverSlot)}
@@ -459,27 +494,24 @@ export function TrendChart({ series, range, onSelectRange, loading }: Props) {
         })}
       </svg>
 
-      {/* footer row, always present so the chart never resizes: shows the
-          drag hint, or (once a range is picked) the active range + clear. */}
-      <div className="px-2 pb-1 text-[10px] text-[color:var(--hn-subtle)] text-right">
+      {/* footer row, always present (one line) so the chart never resizes:
+          shows any status note, then the drag hint or (once a range is picked)
+          the active range + clear. */}
+      <div className="px-2 pb-1 text-[10px] text-[color:var(--hn-subtle)] text-right truncate">
+        {note && (
+          <span className={note.muted ? "" : "text-red-600"}>{note.text}</span>
+        )}
+        {note && range && " · "}
         {range ? (
           <span>
             filtered to{" "}
-            <strong className="text-black">
-              {Math.round((range.toMs - range.fromMs) / MONTH_MS) <= 1
-                ? new Date(range.fromMs).toISOString().slice(0, 7)
-                : `${new Date(range.fromMs).toISOString().slice(0, 7)} → ${new Date(
-                    range.toMs - 1,
-                  )
-                    .toISOString()
-                    .slice(0, 7)}`}
-            </strong>{" "}
+            <strong className="text-black">{rangeLabel(range.fromMs, range.toMs)}</strong>{" "}
             ·{" "}
             <button className="underline" onClick={() => onSelectRange(null)}>
               clear
             </button>
           </span>
-        ) : (
+        ) : note ? null : (
           "click a month to filter, or drag across to pick a range"
         )}
       </div>
@@ -488,7 +520,9 @@ export function TrendChart({ series, range, onSelectRange, loading }: Props) {
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-[color:var(--hn-subtle)] text-sm">
           {loading
             ? "loading…"
-            : "type a term above to chart its traction on Hacker News"}
+            : note
+              ? ""
+              : "type a term above to chart its traction on Hacker News"}
         </div>
       )}
 
@@ -510,7 +544,7 @@ export function TrendChart({ series, range, onSelectRange, loading }: Props) {
               />
               <span className="truncate max-w-[140px]">{r.text || "-"}</span>
               <span className="ml-auto tabular-nums">
-                {r.count.toLocaleString()}
+                {r.count == null ? "-" : r.count.toLocaleString()}
               </span>
             </div>
           ))}

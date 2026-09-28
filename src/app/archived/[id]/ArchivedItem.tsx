@@ -98,14 +98,52 @@ function ItemMeta({ item }: { item: AlgoliaItem }) {
   );
 }
 
-/** HN's own sanitized markup - safe to inject for this demo. Tailwind's preflight
- *  strips default link/paragraph styling, so we restyle inside `.hn-html`. */
+const KEEP = new Set(["P", "I", "EM", "B", "STRONG", "A", "PRE", "CODE", "BR"]);
+const DROP = new Set(["SCRIPT", "STYLE", "IFRAME", "OBJECT", "EMBED", "TEMPLATE"]);
+const esc = (t: string) =>
+  t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+/** Rebuild third-party HTML from HN's small tag set (p, i, a, pre/code…), with
+ *  only http(s) links and no attributes otherwise. Algolia mirrors HN's markup,
+ *  but it's still someone else's HTML going into our origin. */
+function sanitizeHn(html: string): string {
+  const walk = (node: Node): string => {
+    let out = "";
+    node.childNodes.forEach((c) => {
+      if (c.nodeType === Node.TEXT_NODE) {
+        out += esc(c.textContent ?? "");
+        return;
+      }
+      if (c.nodeType !== Node.ELEMENT_NODE) return;
+      const el = c as Element;
+      if (DROP.has(el.tagName)) return;
+      const inner = walk(el);
+      if (!KEEP.has(el.tagName)) out += inner;
+      else if (el.tagName === "BR") out += "<br>";
+      else if (el.tagName === "A") {
+        const href = el.getAttribute("href") ?? "";
+        out += /^https?:\/\//i.test(href)
+          ? `<a href="${esc(href)}" target="_blank" rel="nofollow noreferrer noopener">${inner}</a>`
+          : inner;
+      } else {
+        const t = el.tagName.toLowerCase();
+        out += `<${t}>${inner}</${t}>`;
+      }
+    });
+    return out;
+  };
+  return walk(new DOMParser().parseFromString(html, "text/html").body);
+}
+
+/** HN-style markup, sanitized. Tailwind's preflight strips default
+ *  link/paragraph styling, so we restyle inside `.hn-html`. Only rendered
+ *  client-side (after the archive fetch), where DOMParser exists. */
 function HnHtml({ html }: { html: string | null }) {
-  if (!html) return null;
+  if (!html || typeof DOMParser === "undefined") return null;
   return (
     <div
       className="hn-html text-[10pt] leading-[1.45] text-black mt-1"
-      dangerouslySetInnerHTML={{ __html: html }}
+      dangerouslySetInnerHTML={{ __html: sanitizeHn(html) }}
     />
   );
 }
@@ -161,10 +199,10 @@ export function ArchivedItem({ id }: { id: string }) {
     "loading"
   );
 
+  // No reset here: the page keys this component by id, so a new item mounts
+  // fresh in the loading state.
   useEffect(() => {
     let alive = true;
-    setStatus("loading");
-    setItem(null);
     fetch(`https://hn.algolia.com/api/v1/items/${id}`)
       .then((r) => {
         if (r.status === 404) return { __notfound: true } as const;
@@ -236,7 +274,7 @@ export function ArchivedItem({ id }: { id: string }) {
   // larger thread (a comment, or anything whose root isn't itself).
   const showRootLink = rootId != null && rootId !== item.id;
   const titleHref =
-    item.url && item.url.length > 0
+    item.url && /^https?:\/\//i.test(item.url)
       ? item.url
       : `https://news.ycombinator.com/item?id=${item.id}`;
   const domain = domainOf(item.url);

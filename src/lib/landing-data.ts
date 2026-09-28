@@ -1,21 +1,26 @@
 /**
  * Server-side data layer for the SEO landing pages (`/trends/[term]`,
- * `/compare/[slug]`).
+ * `/compare/[slug]`) and their OG images.
  *
- * These pages are statically generated / ISR-revalidated (see each route's
- * `revalidate`), so the cost here is paid at build/revalidate time, not per
- * request. For a term's monthly histogram we first try the single cached
- * examples key (one GET returns every catalog term's series); only a term
- * outside the catalog falls back to a live aggregate. Top stories are always a
- * single live SEARCH.QUERY - real HN headlines are exactly the indexable
- * content these pages exist to surface.
+ * Those routes are ISR (see each route's `revalidate`): rendered on first
+ * request, then served from cache, so the cost here is paid once per page per
+ * revalidate window, not per request. A term's histogram comes from the shared
+ * examples cache (one read-only GET for the whole catalog, memoized per
+ * instance); only a term outside it runs a live aggregate. Top stories are one
+ * live SEARCH.QUERY - real HN headlines are the indexable content these pages
+ * exist to surface. While the runtime kill switch is on, nothing live runs: the
+ * cache (or the baked snapshot) is the only source.
  *
  * Server-only (reads the Upstash token); never import from a "use client" file.
  */
 
 import { hnRedis, runAggregate, runSearch } from "@/lib/hn-index";
-import { getExamplesData, type MonthCount } from "@/lib/examples-data";
+import { readExamplesCache, type MonthCount } from "@/lib/examples-data";
+import { decodeExamplesWire, type ExamplesWire } from "@/lib/examples-wire";
+import { isQueryingDisabled } from "@/lib/runtime-flags";
+import { SLOTS, lastSlotOf, slotOf, slotRange } from "@/lib/trend-time";
 import { type HnDoc } from "@/lib/hn-query";
+import snapshot from "@/app/examples.json/snapshot.json";
 
 const HAS_CREDS = !!(
   process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN
@@ -25,23 +30,74 @@ const HAS_CREDS = !!(
  *  backend degrades to an empty page section, never a crash. */
 const redis = HAS_CREDS ? hnRedis() : null;
 
-/** A term's monthly histogram: prefer the shared examples cache (one GET for
- *  the whole catalog), fall back to a live SDK aggregate for off-catalog terms. */
-async function bucketsFor(term: string): Promise<MonthCount[]> {
-  try {
-    const examples = await getExamplesData();
-    const cached = examples.terms[term];
-    if (cached && cached.length) return cached;
-  } catch {
-    // fall through to live
+/** A cached catalog: term -> histogram, plus the slot that was still in
+ *  progress when it was built (charts end that data there). */
+type Gallery = { terms: Record<string, MonthCount[]>; endSlot: number };
+
+const GALLERY_TTL_MS = 5 * 60_000;
+const GALLERY_MISS_TTL_MS = 30_000;
+let gallery: { at: number; ttl: number; p: Promise<Gallery | null> } | null = null;
+
+/** The examples cache blob, memoized per instance for a few minutes and shared
+ *  by concurrent renders, so a burst of ISR regenerations is one multi-MB GET.
+ *  Read-only: a miss is `null` (remembered briefly), never a compute. */
+function galleryCache(): Promise<Gallery | null> {
+  const now = Date.now();
+  if (gallery && now - gallery.at < gallery.ttl) return gallery.p;
+  const p = readExamplesCache()
+    .then((d) => (d ? { terms: d.terms, endSlot: lastSlotOf(d.terms) } : null))
+    .catch(() => null);
+  const entry = { at: now, ttl: GALLERY_TTL_MS, p };
+  gallery = entry;
+  void p.then((g) => {
+    if (!g) entry.ttl = GALLERY_MISS_TTL_MS;
+  });
+  return p;
+}
+
+let snap: Gallery | null = null;
+/** The baked gallery snapshot: last resort for catalog terms when the cache is
+ *  missing and live querying is off or failing. */
+function snapshotGallery(): Gallery {
+  if (!snap) {
+    const terms = decodeExamplesWire(snapshot as ExamplesWire);
+    snap = { terms, endSlot: lastSlotOf(terms) };
   }
-  if (!redis) return [];
-  try {
-    const agg = await runAggregate(redis, { q: term });
-    return agg.buckets.map((b) => ({ key: b.key, docCount: b.docCount }));
-  } catch {
-    return [];
+  return snap;
+}
+
+export type TermSeries = {
+  buckets: MonthCount[];
+  /** The data's in-progress slot (see trend-time `trendPaths`). */
+  endSlot: number;
+};
+
+/** A term's histogram: the examples cache, else a live aggregate (skipped while
+ *  querying is disabled), else the baked snapshot. Throws when there is no data
+ *  because the live aggregate failed or was skipped, so ISR keeps the previous
+ *  page (or retries later) instead of caching an empty "no mentions" page. */
+async function seriesFor(term: string, live: boolean): Promise<TermSeries> {
+  const g = await galleryCache();
+  const cached = g?.terms[term];
+  if (g && cached?.length) return { buckets: cached, endSlot: g.endSlot };
+  let failure: unknown = null;
+  if (live && redis) {
+    try {
+      const agg = await runAggregate(redis, { q: term });
+      return {
+        buckets: agg.buckets.map((b) => ({ key: b.key, docCount: b.docCount })),
+        endSlot: SLOTS - 1,
+      };
+    } catch (e) {
+      failure = e;
+    }
   }
+  const s = snapshotGallery();
+  const baked = s.terms[term];
+  if (baked?.length) return { buckets: baked, endSlot: s.endSlot };
+  if (failure) throw failure;
+  if (!live) throw new Error(`querying disabled, no cached histogram for "${term}"`);
+  return { buckets: [], endSlot: SLOTS - 1 };
 }
 
 /** Top stories for a term, by upvotes - the headline list a landing page shows.
@@ -66,12 +122,15 @@ export type TermStats = {
   lastYear: number | null;
 };
 
+/** "Feb 2026": the calendar month a 30d bucket starts in. */
 function monthLabel(epochMs: number): string {
-  const d = new Date(epochMs);
+  const d = new Date(slotRange(slotOf(epochMs)).fromMs);
   return `${d.toLocaleString("en-US", { month: "short", timeZone: "UTC" })} ${d.getUTCFullYear()}`;
 }
 
-export function statsFor(buckets: MonthCount[]): TermStats {
+/** Headline stats. The peak skips the in-progress slot (`endSlot`): a partial
+ *  count isn't a peak month. */
+export function statsFor(buckets: MonthCount[], endSlot = SLOTS - 1): TermStats {
   let total = 0;
   let peak: MonthCount | null = null;
   let first: number | null = null;
@@ -81,15 +140,15 @@ export function statsFor(buckets: MonthCount[]): TermStats {
     if (b.docCount > 0) {
       if (first === null) first = b.key;
       last = b.key;
-      if (!peak || b.docCount > peak.docCount) peak = b;
+      if (slotOf(b.key) < endSlot && (!peak || b.docCount > peak.docCount)) peak = b;
     }
   }
   return {
     total,
     peakLabel: peak ? monthLabel(peak.key) : null,
     peakCount: peak?.docCount ?? 0,
-    firstYear: first ? new Date(first).getUTCFullYear() : null,
-    lastYear: last ? new Date(last).getUTCFullYear() : null,
+    firstYear: first ? new Date(slotRange(slotOf(first)).fromMs).getUTCFullYear() : null,
+    lastYear: last ? new Date(slotRange(slotOf(last)).fromMs).getUTCFullYear() : null,
   };
 }
 
@@ -117,29 +176,29 @@ export function trendSummary(term: string, stats: TermStats): string {
  *  OG image routes, which only draw the line. */
 export async function getTermSeries(
   term: string,
-): Promise<{ buckets: MonthCount[]; stats: TermStats }> {
-  const buckets = await bucketsFor(term);
-  return { buckets, stats: statsFor(buckets) };
+): Promise<TermSeries & { stats: TermStats }> {
+  const live = !(await isQueryingDisabled());
+  const series = await seriesFor(term, live);
+  return { ...series, stats: statsFor(series.buckets, series.endSlot) };
 }
 
-export type TermLanding = {
+export type TermLanding = TermSeries & {
   term: string;
-  buckets: MonthCount[];
   stats: TermStats;
   stories: HnDoc[];
 };
 
 export async function getTermLanding(term: string): Promise<TermLanding> {
-  const [buckets, stories] = await Promise.all([
-    bucketsFor(term),
-    topStories(term),
+  const live = !(await isQueryingDisabled());
+  const [series, stories] = await Promise.all([
+    seriesFor(term, live),
+    live ? topStories(term) : Promise.resolve([]),
   ]);
-  return { term, buckets, stats: statsFor(buckets), stories };
+  return { term, ...series, stats: statsFor(series.buckets, series.endSlot), stories };
 }
 
-export type ComparisonSeries = {
+export type ComparisonSeries = TermSeries & {
   term: string;
-  buckets: MonthCount[];
   stats: TermStats;
   /** A few top headlines for this term - real, per-term content so a comparison
    *  page isn't just an overlaid chart (which read as thin/templated). */
@@ -151,17 +210,20 @@ export type ComparisonLanding = {
   series: ComparisonSeries[];
 };
 
+/** Per-term series + stats, and (when `storiesPerTerm` > 0) top stories. The
+ *  OG image passes 0: it only draws the lines. */
 export async function getComparisonLanding(
   terms: string[],
   storiesPerTerm = 4,
 ): Promise<ComparisonLanding> {
+  const live = !(await isQueryingDisabled());
   const series = await Promise.all(
     terms.map(async (term) => {
-      const [buckets, stories] = await Promise.all([
-        bucketsFor(term),
-        topStories(term, storiesPerTerm),
+      const [s, stories] = await Promise.all([
+        seriesFor(term, live),
+        live && storiesPerTerm > 0 ? topStories(term, storiesPerTerm) : Promise.resolve([]),
       ]);
-      return { term, buckets, stats: statsFor(buckets), stories };
+      return { term, ...s, stats: statsFor(s.buckets, s.endSlot), stories };
     }),
   );
   return { terms, series };

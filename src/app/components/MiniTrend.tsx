@@ -2,7 +2,7 @@
 
 import { memo, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { MIN_MS, MAX_MS, MONTH_MS, SLOTS, slotOf } from "@/lib/trend-time";
+import { MIN_MS, MONTH_MS, SLOTS, slotLabel, slotOf, trendPaths } from "@/lib/trend-time";
 import { landingHref } from "@/lib/site";
 
 const VIEW_W = 320;
@@ -13,7 +13,13 @@ const PAD_B = 6;
 /** The lean monthly point the gallery plots (see examples-data MonthCount). */
 type MonthBucket = { key: number; docCount: number };
 
-export type MiniSeries = { term: string; color: string; buckets: MonthBucket[] };
+export type MiniSeries = {
+  term: string;
+  color: string;
+  buckets: MonthBucket[];
+  /** In-progress slot of this data (drawn dashed); defaults to the current one. */
+  endSlot?: number;
+};
 
 type Props = {
   /** one series (single term) or several (a comparison). The title is built
@@ -25,12 +31,6 @@ type Props = {
    *  the search tool now) instead of navigating to a route. */
   onPick?: (terms: string[]) => void;
 };
-
-const xOf = (ms: number) => ((ms - MIN_MS) / (MAX_MS - MIN_MS)) * VIEW_W;
-const slotCenterX = (i: number) => ((i + 0.5) / SLOTS) * VIEW_W;
-const SLOT_W = VIEW_W / SLOTS;
-const slotAtX = (x: number) =>
-  Math.max(0, Math.min(SLOTS - 1, Math.floor((x / VIEW_W) * SLOTS)));
 
 function densify(buckets: MonthBucket[]): Float64Array {
   const dense = new Float64Array(SLOTS);
@@ -77,30 +77,40 @@ export const MiniTrend = memo(function MiniTrend({ series, story, onPick }: Prop
   const svgRef = useRef<SVGSVGElement | null>(null);
   const [hoverSlot, setHoverSlot] = useState<number | null>(null);
 
+  // The x-axis runs through the data's in-progress slot, so a cache built a
+  // slot ago doesn't leave an empty strip on the right.
+  const end = Math.min(SLOTS - 1, Math.max(...series.map((s) => s.endSlot ?? SLOTS - 1)));
+  const n = end + 1;
+  const xOf = (ms: number) => ((ms - MIN_MS) / (n * MONTH_MS)) * VIEW_W;
+  const slotCenterX = (i: number) => ((i + 0.5) / n) * VIEW_W;
+  const slotAtX = (x: number) => Math.max(0, Math.min(end, Math.floor((x / VIEW_W) * n)));
+
   const { dense, globalMax } = useMemo(() => {
     const dense = series.map((s) => ({ s, values: densify(s.buckets) }));
     let globalMax = 0;
-    for (const d of dense) for (const v of d.values) if (v > globalMax) globalMax = v;
+    for (const d of dense)
+      for (let i = 0; i <= end; i++) if (d.values[i] > globalMax) globalMax = d.values[i];
     return { dense, globalMax: globalMax || 1 };
-  }, [series]);
+  }, [series, end]);
 
   const yOf = (v: number) =>
     VIEW_H - PAD_B - (v / globalMax) * (VIEW_H - PAD_T - PAD_B);
 
   const paths = useMemo(
     () =>
-      dense.map(({ s, values }) => {
-        // Round coords to 1 decimal: at this 320-unit viewBox that's sub-pixel,
-        // but full 16-digit floats made each SSR'd path ~8.7 KB and ~190 gallery
-        // sparklines blew the homepage HTML past 5 MB.
-        const pts = Array.from(values, (v, i) => `${slotCenterX(i).toFixed(1)},${yOf(v).toFixed(1)}`);
-        const base = VIEW_H - PAD_B;
-        return {
-          color: s.color,
-          line: `M${pts.join("L")}`,
-          area: `M${slotCenterX(0).toFixed(1)},${base}L${pts.join("L")}L${slotCenterX(SLOTS - 1).toFixed(1)},${base}Z`,
-        };
-      }),
+      // Coords are rounded to 1 decimal (trendPaths): at this 320-unit viewBox
+      // that's sub-pixel, but full 16-digit floats made each SSR'd path ~8.7 KB
+      // and ~190 gallery sparklines blew the homepage HTML past 5 MB.
+      dense.map(({ s, values }) => ({
+        color: s.color,
+        ...trendPaths(values, {
+          lo: 0,
+          end: Math.min(end, s.endSlot ?? SLOTS - 1),
+          x: slotCenterX,
+          y: yOf,
+          base: VIEW_H - PAD_B,
+        }),
+      })),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [dense, globalMax],
   );
@@ -113,8 +123,7 @@ export const MiniTrend = memo(function MiniTrend({ series, story, onPick }: Prop
     return Math.max(0, Math.min(VIEW_W, ((clientX - rect.left) / rect.width) * VIEW_W));
   };
 
-  const hoverMonth =
-    hoverSlot == null ? null : new Date(MIN_MS + hoverSlot * MONTH_MS).toISOString().slice(0, 7);
+  const hoverMonth = hoverSlot == null ? null : slotLabel(hoverSlot);
 
   return (
     <div className="mini-trend">
@@ -193,14 +202,26 @@ export const MiniTrend = memo(function MiniTrend({ series, story, onPick }: Prop
               vectorEffect="non-scaling-stroke"
             />
           ))}
+        {hasData &&
+          paths.map((p, i) => (
+            <path
+              key={`p${i}`}
+              d={p.partial}
+              fill="none"
+              stroke={p.color}
+              strokeWidth={1.4}
+              strokeDasharray="2 2"
+              vectorEffect="non-scaling-stroke"
+            />
+          ))}
 
         {/* hover column + crosshair */}
         {hoverSlot != null && hasData && (
           <>
             <rect
-              x={(hoverSlot / SLOTS) * VIEW_W}
+              x={(hoverSlot / n) * VIEW_W}
               y={PAD_T}
-              width={SLOT_W}
+              width={VIEW_W / n}
               height={VIEW_H - PAD_T - PAD_B}
               fill="rgba(255,102,0,0.16)"
             />

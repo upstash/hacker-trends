@@ -6,26 +6,37 @@ import { SLOTS, slotOf } from "@/lib/trend-time";
 export const alt = "Hacker News mention trend";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
-// Drawn from live Upstash Redis Search (via the `@upstash/redis` SDK), so render
-// on demand and let the CDN cache the PNG - don't prerender every term's image at
-// build time (matches the prior `cache:"no-store"` data-layer behavior).
-export const dynamic = "force-dynamic";
+// ISR like the page: rendered on first request (never at build), then cached.
+// Any term works, not just catalog ones: the homepage's `?q=` share previews
+// point here.
+export const dynamic = "force-static";
+export const revalidate = 21600;
+
+export function generateStaticParams() {
+  return [];
+}
 
 const BARS = 96;
 
-/** Densify buckets to monthly slots, then downsample to BARS columns (summing),
- *  returning heights as 0–100 percentages of the series max. */
-function toBars(buckets: { key: number; docCount: number }[]): number[] {
-  const dense = new Float64Array(SLOTS);
+/** Densify buckets to slots, then downsample the COMPLETE slots (the
+ *  in-progress `endSlot` is left out, so the last bar isn't a partial-count
+ *  cliff) to BARS columns. Each column is the mean of its 2-3 slots (a sum
+ *  would sawtooth), as a 0–100 percentage of the tallest column. */
+function toBars(buckets: { key: number; docCount: number }[], endSlot: number): number[] {
+  const n = Math.max(1, Math.min(SLOTS, endSlot));
+  const dense = new Float64Array(n);
   for (const b of buckets) {
     const slot = slotOf(b.key);
-    if (slot >= 0 && slot < SLOTS) dense[slot] += b.docCount;
+    if (slot >= 0 && slot < n) dense[slot] += b.docCount;
   }
-  const out = new Array(BARS).fill(0);
-  for (let i = 0; i < SLOTS; i++) {
-    const col = Math.min(BARS - 1, Math.floor((i / SLOTS) * BARS));
-    out[col] += dense[i];
+  const sum = new Array(BARS).fill(0);
+  const cnt = new Array(BARS).fill(0);
+  for (let i = 0; i < n; i++) {
+    const col = Math.min(BARS - 1, Math.floor((i / n) * BARS));
+    sum[col] += dense[i];
+    cnt[col]++;
   }
+  const out = sum.map((v, i) => (cnt[i] ? v / cnt[i] : 0));
   const max = Math.max(1, ...out);
   return out.map((v) => Math.round((v / max) * 100));
 }
@@ -37,8 +48,8 @@ export default async function Image({
 }) {
   const { term: slug } = await params;
   const term = slugToTerm(slug);
-  const { buckets, stats } = await getTermSeries(term);
-  const bars = toBars(buckets);
+  const { buckets, endSlot, stats } = await getTermSeries(term);
+  const bars = toBars(buckets, endSlot);
 
   return new ImageResponse(
     (

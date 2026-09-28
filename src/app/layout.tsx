@@ -8,6 +8,9 @@ import {
   SITE_NAME,
   SITE_TAGLINE,
   SITE_DESCRIPTION,
+  DEFAULT_OG_IMAGE,
+  OG_BASE,
+  TWITTER_BASE,
 } from "@/lib/site";
 
 export const metadata: Metadata = {
@@ -34,17 +37,20 @@ export const metadata: Metadata = {
   creator: "Upstash",
   publisher: "Upstash",
   alternates: { canonical: "/" },
+  // Explicit default card so every page has one: the file-based image only
+  // attaches to "/", and a child's own `openGraph` object drops the layout's.
   openGraph: {
-    type: "website",
-    siteName: SITE_NAME,
+    ...OG_BASE,
     url: SITE_URL,
     title: `${SITE_NAME}: ${SITE_TAGLINE}`,
     description: SITE_DESCRIPTION,
+    images: [DEFAULT_OG_IMAGE],
   },
   twitter: {
-    card: "summary_large_image",
+    ...TWITTER_BASE,
     title: `${SITE_NAME}: ${SITE_TAGLINE}`,
     description: SITE_DESCRIPTION,
+    images: [DEFAULT_OG_IMAGE.url],
   },
   robots: {
     index: true,
