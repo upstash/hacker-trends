@@ -314,21 +314,42 @@ async function fillMiss<T>(
     if (shared) {
       // Re-check (the previous holder may have cached it just before we got
       // the lock) while taking a global token; a rare hit wastes one token.
-      const [hit, budget] = await Promise.all([
+      const [hit, firstBudget] = await Promise.all([
         cacheGet<T>(key),
         globalSearchBudget(),
       ]);
+      let budget = firstBudget;
       if (budget.pending) background(budget.pending);
       if (hit !== null) return hit;
-      if (!budget.success) throw busy(budget.retryAfter);
+      if (!budget.success) {
+        // One short wait for the next slot, so a page firing several terms at
+        // once (the jobs hub's 8) mostly lands instead of bouncing as busy.
+        await sleep(Math.min(budget.retryAfter || 1, 1) * 1000 + Math.random() * 250);
+        budget = await globalSearchBudget();
+        if (budget.pending) background(budget.pending);
+        if (!budget.success) throw busy(budget.retryAfter);
+      }
     }
-    const result = await compute();
+    // The budget caps query STARTS; this caps queries RUNNING on this instance,
+    // so slow cold aggregates can't pile up past what the DB can serve.
+    if (liveQueries >= MAX_LIVE_QUERIES) throw busy(1);
+    liveQueries++;
+    let result: T;
+    try {
+      result = await compute();
+    } finally {
+      liveQueries--;
+    }
     await cacheSet(key, result, ttlS);
     return result;
   } finally {
     await releaseLock(lockKey, token);
   }
 }
+
+// Live Upstash queries currently running on this instance (see fillMiss).
+const MAX_LIVE_QUERIES = Number(process.env.RATELIMIT_INFLIGHT ?? 8);
+let liveQueries = 0;
 
 // In-process single-flight: concurrent identical misses on one warm instance
 // share one promise (and so one lock/poll loop and one query).

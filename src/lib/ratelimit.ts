@@ -13,6 +13,8 @@
  *   RATELIMIT_REQUESTS / RATELIMIT_WINDOW                per-IP searches (30 / "10 s")
  *   RATELIMIT_THREAD_REQUESTS                            per-IP thread lookups (120 / same window)
  *   RATELIMIT_GLOBAL_REQUESTS / RATELIMIT_GLOBAL_WINDOW  global live searches (6 / "1 s")
+ *   RATELIMIT_RENDER_REQUESTS                            live searches from ISR page/OG renders (2 / global window)
+ *   RATELIMIT_INFLIGHT                                   live searches running per instance (8, route.ts)
  *   RATELIMIT_ANALYTICS=1                                populate the Upstash dashboard
  *
  * Keep the global budget well under the Search DB's measured ceiling; raise it
@@ -34,12 +36,13 @@ const LIMIT = Number(process.env.RATELIMIT_REQUESTS ?? 30);
 const THREAD_LIMIT = Number(process.env.RATELIMIT_THREAD_REQUESTS ?? 120);
 const GLOBAL_LIMIT = Number(process.env.RATELIMIT_GLOBAL_REQUESTS ?? 6);
 const GLOBAL_WINDOW = (process.env.RATELIMIT_GLOBAL_WINDOW ?? "1 s") as Duration;
+const RENDER_LIMIT = Number(process.env.RATELIMIT_RENDER_REQUESTS ?? 2);
 
 export type LimitKind = "search" | "thread";
 
 // Built once per warm instance, lazily. `null` means "limiting disabled".
 let limiters:
-  | { search: Ratelimit; thread: Ratelimit; global: Ratelimit }
+  | { search: Ratelimit; thread: Ratelimit; global: Ratelimit; render: Ratelimit }
   | null
   | undefined;
 
@@ -68,6 +71,7 @@ function getLimiters() {
     search: make(LIMIT, WINDOW, "ratelimit"),
     thread: make(THREAD_LIMIT, WINDOW, "ratelimit:thread"),
     global: make(GLOBAL_LIMIT, GLOBAL_WINDOW, "ratelimit:global"),
+    render: make(RENDER_LIMIT, GLOBAL_WINDOW, "ratelimit:render"),
   };
   return limiters;
 }
@@ -139,32 +143,52 @@ export async function rateLimitRequest(
  * real Upstash Search query (never for cache hits). Fails open on any error.
  */
 export async function globalSearchBudget(): Promise<RateLimitResult> {
+  return takeBudget("global", GLOBAL_LIMIT);
+}
+
+/**
+ * Take one token from the separate, smaller budget for live queries made while
+ * rendering ISR pages and OG images. Kept apart from the `/api/hn` budget so
+ * bots crawling random `/trends/<slug>` URLs can't starve interactive search.
+ */
+export async function renderSearchBudget(): Promise<RateLimitResult> {
+  return takeBudget("render", RENDER_LIMIT);
+}
+
+async function takeBudget(
+  kind: "global" | "render",
+  limit: number,
+): Promise<RateLimitResult> {
   const l = getLimiters();
-  if (!l) return localGlobalBudget();
+  if (!l) return localBudget(kind, limit);
   try {
-    const { success, reset, pending } = await l.global.limit("global");
+    const { success, reset, pending } = await l[kind].limit(kind);
     return { success, pending, retryAfter: secondsUntil(reset), headers: {} };
   } catch (e) {
-    console.error("[ratelimit] global check failed, using per-instance budget:", e);
-    return localGlobalBudget();
+    console.error(`[ratelimit] ${kind} check failed, using per-instance budget:`, e);
+    return localBudget(kind, limit);
   }
 }
 
 const GLOBAL_WINDOW_MS = durationMs(GLOBAL_WINDOW);
-let localWindow = { start: 0, count: 0 };
+const localWindows = {
+  global: { start: 0, count: 0 },
+  render: { start: 0, count: 0 },
+};
 
-/** Fixed window of GLOBAL_LIMIT per GLOBAL_WINDOW on this instance only. */
-function localGlobalBudget(): RateLimitResult {
+/** Fixed window of `limit` per GLOBAL_WINDOW on this instance only. */
+function localBudget(kind: "global" | "render", limit: number): RateLimitResult {
   const now = Date.now();
-  if (now - localWindow.start >= GLOBAL_WINDOW_MS) localWindow = { start: now, count: 0 };
-  if (localWindow.count >= GLOBAL_LIMIT) {
+  let w = localWindows[kind];
+  if (now - w.start >= GLOBAL_WINDOW_MS) w = localWindows[kind] = { start: now, count: 0 };
+  if (w.count >= limit) {
     return {
       success: false,
       headers: {},
-      retryAfter: secondsUntil(localWindow.start + GLOBAL_WINDOW_MS),
+      retryAfter: secondsUntil(w.start + GLOBAL_WINDOW_MS),
     };
   }
-  localWindow.count++;
+  w.count++;
   return ALLOW;
 }
 

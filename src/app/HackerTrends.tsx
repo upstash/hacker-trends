@@ -43,6 +43,8 @@ const PREVIEW_ROWS = 8;
 
 // Typing pause before a term set is committed (queried, put in the URL).
 const COMMIT_MS = 500;
+// Automatic retries per term for a transiently failed chart aggregate.
+const MAX_AGG_RETRIES = 3;
 
 // Terms whose histogram ships in `/examples.json` (lowercase, like the index).
 const GALLERY_TERMS = new Set(allExampleTerms());
@@ -150,6 +152,8 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
   const [live, setLive] = useState<Record<string, ChartBucket[]>>({});
   const [aggErrs, setAggErrs] = useState<Record<string, unknown>>({});
   const commitTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // Auto-retries spent per term (see the chart-data effect).
+  const retries = useRef(new Map<string, number>());
   const commit = useCallback((next: Q[], delay = 0) => {
     clearTimeout(commitTimer.current);
     const apply = () => {
@@ -291,7 +295,26 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
       // No abort: the server runs the query regardless, so keep the result.
       aggregate({ q: t })
         .then((r) => setLive((m) => ({ ...m, [t]: r.buckets })))
-        .catch((e) => setAggErrs((m) => ({ ...m, [t]: e })))
+        .catch((e) => {
+          setAggErrs((m) => ({ ...m, [t]: e }));
+          // Busy / rate-limited / upstream blips are transient: drop the error
+          // after a backoff so this effect retries, a few times per term.
+          const n = retries.current.get(t) ?? 0;
+          const transient = !(e instanceof ApiError) || e.code !== "bad_request";
+          if (transient && n < MAX_AGG_RETRIES) {
+            retries.current.set(t, n + 1);
+            setTimeout(
+              () =>
+                setAggErrs((m) => {
+                  if (!(t in m)) return m;
+                  const rest = { ...m };
+                  delete rest[t];
+                  return rest;
+                }),
+              2000 * 2 ** n + Math.random() * 1000,
+            );
+          }
+        })
         .finally(() => inflight.current.delete(t));
     }
   }, [chartKey, dataFor, galleryReady, aggErrs]);

@@ -15,7 +15,7 @@
  */
 
 import { hnRedis } from "@/lib/hn-index";
-import { budgetedAggregate, budgetedSearch } from "@/lib/live-query";
+import { budgetedAggregate, budgetedSearch, shortenRevalidate } from "@/lib/live-query";
 import { readExamplesCache, type MonthCount } from "@/lib/examples-data";
 import { decodeExamplesWire, type ExamplesWire } from "@/lib/examples-wire";
 import { isQueryingDisabled } from "@/lib/runtime-flags";
@@ -93,6 +93,8 @@ async function seriesFor(term: string, live: boolean): Promise<TermSeries> {
       failure = e;
     }
   }
+  // Past here the page is degraded (stale snapshot, or no data at all).
+  await shortenRevalidate();
   const s = snapshotGallery();
   const baked = s.terms[term];
   if (baked?.length) return { buckets: baked, endSlot: s.endSlot };
@@ -108,6 +110,9 @@ async function topStories(term: string, limit = 12): Promise<HnDoc[]> {
   try {
     return await budgetedSearch(redis, { q: term, sort: "score", limit, type: "story" });
   } catch {
+    // Budget spent or query failed: don't let a story-less page sit in ISR for
+    // the full window.
+    await shortenRevalidate();
     return [];
   }
 }
@@ -191,6 +196,7 @@ export type TermLanding = TermSeries & {
 
 export async function getTermLanding(term: string): Promise<TermLanding> {
   const live = !(await isQueryingDisabled());
+  if (!live) await shortenRevalidate();
   const [series, stories] = await Promise.all([
     seriesFor(term, live),
     live ? topStories(term) : Promise.resolve([]),
@@ -218,6 +224,7 @@ export async function getComparisonLanding(
   storiesPerTerm = 4,
 ): Promise<ComparisonLanding> {
   const live = !(await isQueryingDisabled());
+  if (!live) await shortenRevalidate();
   const series = await Promise.all(
     terms.map(async (term) => {
       const [s, stories] = await Promise.all([

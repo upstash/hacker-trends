@@ -684,7 +684,8 @@ export function jobsComparisonSeo(terms: string[]): JobsSeoEntry {
  *  + index; anything else still renders via the keyword-led template but is
  *  noindex,follow (crawlable, kept out of the sitemap so it doesn't dilute). */
 export function curatedJobsTermSlugs(): string[] {
-  return Object.keys(TERM_SEO);
+  // TERM_SEO keys are terms ("machine learning"); the page URL is the slug.
+  return Object.keys(TERM_SEO).map(termToSlug);
 }
 
 /** Every comparison slug that has a CURATED head-to-head page. */

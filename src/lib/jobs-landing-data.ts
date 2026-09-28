@@ -31,7 +31,7 @@
  */
 
 import { hnRedis } from "@/lib/hn-index";
-import { budgetedAggregate, budgetedSearch } from "@/lib/live-query";
+import { budgetedAggregate, budgetedSearch, shortenRevalidate } from "@/lib/live-query";
 import { type HnDoc, type SortMode } from "@/lib/hn-query";
 import { readJobsGalleryParts } from "@/lib/jobs-gallery-data";
 import { drillIndex } from "@/lib/jobs-index";
@@ -72,23 +72,9 @@ async function newCtx(): Promise<Ctx> {
   return { live, degraded: !live };
 }
 
-/** How long a degraded render may be served before ISR retries it. */
-const DEGRADED_REVALIDATE_S = 300;
-
-/** Shorten the current render's ISR lifetime. A fetch with a smaller
- *  `next.revalidate` than the route's lowers the whole route's revalidate for
- *  this render (Next's documented per-render opt-in); a PING is the cheapest
- *  request that carries it, and the data cache dedupes it for its lifetime. */
+/** Shorten this render's ISR lifetime if anything had to degrade. */
 async function finish(ctx: Ctx): Promise<void> {
-  if (!ctx.degraded || !process.env.UPSTASH_REDIS_REST_URL) return;
-  try {
-    await fetch(`${process.env.UPSTASH_REDIS_REST_URL}/ping`, {
-      headers: { authorization: `Bearer ${process.env.UPSTASH_REDIS_REST_TOKEN}` },
-      next: { revalidate: DEGRADED_REVALIDATE_S },
-    });
-  } catch {
-    // best effort: worst case the degraded page lives for the normal window
-  }
+  if (ctx.degraded) await shortenRevalidate();
 }
 
 /* ---------- monthly histograms (chart + stats) ---------------------- */

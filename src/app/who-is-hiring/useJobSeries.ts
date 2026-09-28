@@ -24,7 +24,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { aggregate, ApiError, friendlyError } from "@/lib/hn-search";
 import { drillIndex } from "@/lib/jobs-index";
 import { QUERYING_DISABLED } from "@/lib/maintenance";
-import { useJobsGallery } from "./useJobsGallery";
+import { galleryPart, useJobsGallery } from "./useJobsGallery";
 import {
   parseParts,
   binMonths,
@@ -62,6 +62,8 @@ async function aggregateSeries(
   const { index, scope } = drillIndex();
   const perPart = await Promise.all(
     parts.map(async (p) => {
+      const primed = await galleryPart(p);
+      if (primed) return binMonths(primed as RawBucket[]);
       const { buckets } = await aggregate({ q: p, scope, index, signal });
       return binMonths(buckets as RawBucket[]);
     }),

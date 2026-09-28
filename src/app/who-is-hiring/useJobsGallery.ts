@@ -71,6 +71,16 @@ function loadGalleryDataset(): Promise<void> {
   return inflight;
 }
 
+/** One part's primed histogram from the shared gallery dataset (fetched once
+ *  per session), or undefined when the dataset or the part is unavailable. The
+ *  big chart tries this before a live aggregate: the default comparisons are
+ *  all gallery parts, so they cost no Search queries at all. */
+export async function galleryPart(part: string): Promise<MonthCount[] | undefined> {
+  await loadGalleryDataset();
+  const pts = cachedTerms?.[part];
+  return pts && pts.length ? pts : undefined;
+}
+
 /** `enabled` false skips the fetch entirely (the big chart only needs the
  *  dataset while live querying is off). */
 export function useJobsGallery(enabled = true): GalleryDataset {
