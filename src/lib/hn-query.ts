@@ -83,9 +83,19 @@ export type AggResponse = Aggregations & { latencyMs: number };
  * The index analyzer lowercases both indexed text and query terms (`$eq` and
  * `$phrase` alike), so case and spacing never change results; normalizing lets
  * `RUST`, `rust ` and `rust` share one cache entry (Redis, CDN and browser).
+ * Lowercases char by char, like the analyzer (so no final-sigma rule), and
+ * keeps chars whose lowercase is longer (`İ` -> `i` + U+0307): the analyzer
+ * splits tokens BEFORE lowercasing, so sending the combining dot would split
+ * the word.
  */
 export function normalizeQuery(q: string): string {
-  return q.trim().replace(/\s+/g, " ").toLowerCase();
+  return q
+    .trim()
+    .replace(/\s+/g, " ")
+    .replace(/[\s\S]/gu, (c) => {
+      const l = c.toLowerCase();
+      return l.length === c.length ? l : c;
+    });
 }
 
 /**

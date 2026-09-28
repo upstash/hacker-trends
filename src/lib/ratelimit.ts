@@ -18,8 +18,10 @@
  * Keep the global budget well under the Search DB's measured ceiling; raise it
  * only after the DB is scaled. Counters live on `cacheRedis()` (the optional
  * CACHE_REDIS_REST_* DB, else the main one) under `ratelimit*` prefixes, so the
- * token must be writable. Every check fails OPEN: an unconfigured or erroring
- * Redis means "allow", never "the API is down".
+ * token must be writable. The per-IP checks fail OPEN: an unconfigured or
+ * erroring Redis means "allow", never "the API is down". The global budget
+ * falls back to the same limit counted per instance, so a Redis fault (likely
+ * exactly when the shared DB is saturated) can't lift the cap entirely.
  */
 
 import { Ratelimit } from "@upstash/ratelimit";
@@ -138,12 +140,37 @@ export async function rateLimitRequest(
  */
 export async function globalSearchBudget(): Promise<RateLimitResult> {
   const l = getLimiters();
-  if (!l) return ALLOW;
+  if (!l) return localGlobalBudget();
   try {
     const { success, reset, pending } = await l.global.limit("global");
     return { success, pending, retryAfter: secondsUntil(reset), headers: {} };
   } catch (e) {
-    console.error("[ratelimit] global check failed, allowing request:", e);
-    return ALLOW;
+    console.error("[ratelimit] global check failed, using per-instance budget:", e);
+    return localGlobalBudget();
   }
+}
+
+const GLOBAL_WINDOW_MS = durationMs(GLOBAL_WINDOW);
+let localWindow = { start: 0, count: 0 };
+
+/** Fixed window of GLOBAL_LIMIT per GLOBAL_WINDOW on this instance only. */
+function localGlobalBudget(): RateLimitResult {
+  const now = Date.now();
+  if (now - localWindow.start >= GLOBAL_WINDOW_MS) localWindow = { start: now, count: 0 };
+  if (localWindow.count >= GLOBAL_LIMIT) {
+    return {
+      success: false,
+      headers: {},
+      retryAfter: secondsUntil(localWindow.start + GLOBAL_WINDOW_MS),
+    };
+  }
+  localWindow.count++;
+  return ALLOW;
+}
+
+/** "10 s" / "1m" / "500 ms" -> ms (the `Duration` format the limiter takes). */
+function durationMs(d: string): number {
+  const m = /^(\d+)\s*(ms|s|m|h|d)$/.exec(d.trim());
+  const unit = { ms: 1, s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 };
+  return m ? Number(m[1]) * unit[m[2] as keyof typeof unit] : 1000;
 }

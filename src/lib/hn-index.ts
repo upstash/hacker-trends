@@ -70,15 +70,19 @@ export function cacheRedis(): Redis | null {
   const token = own
     ? process.env.CACHE_REDIS_REST_TOKEN
     : process.env.UPSTASH_REDIS_REST_TOKEN;
-  cacheClient =
-    url && token
-      ? new Redis({
-          url,
-          token,
-          retry: { retries: 1 },
-          signal: () => AbortSignal.timeout(CACHE_CMD_TIMEOUT_MS),
-        })
-      : null;
+  cacheClient = null;
+  if (!url || !token) return cacheClient;
+  try {
+    cacheClient = new Redis({
+      url,
+      token,
+      retry: { retries: 1 },
+      signal: () => AbortSignal.timeout(CACHE_CMD_TIMEOUT_MS),
+    });
+  } catch (e) {
+    // e.g. a malformed URL: run without the cache DB rather than 502 every miss
+    console.error("[hn-index] cache Redis config invalid:", e);
+  }
   return cacheClient;
 }
 

@@ -83,9 +83,10 @@ const DATA_DAY_OFFSET_MS = 3 * 3600_000;
 // whose holder died frees itself no later than the holder would have finished.
 const LOCK_PREFIX = "hnlock:v1:";
 const LOCK_TTL_MS = 60_000;
-// How long a loser waits for the winner's cached result before answering busy.
-// Waiting costs the Search DB nothing; giving up and querying would.
-const LOCK_WAIT_MS = 15_000;
+// How long a loser waits for the winner's cached result before answering busy:
+// up to just under DEADLINE_MS, since cold aggregates can take 30s+. Waiting
+// costs the Search DB nothing; giving up and querying would.
+const LOCK_WAIT_MS = 45_000;
 const LOCK_WAIT_RETRY_AFTER_S = 5;
 
 // Server-side Upstash credentials for the Search DB (never sent to the browser).
