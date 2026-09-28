@@ -4,14 +4,16 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   aggregate,
+  friendlyError,
   searchPosts,
-  type AggResponse,
+  ApiError,
   type HnDoc,
   type SortMode,
 } from "@/lib/hn-search";
-import { buildShareSearch, type ShareState } from "@/lib/share-url";
+import { buildShareSearch, parseShareState, type ShareState } from "@/lib/share-url";
 import { decodeExamplesWire, type ExamplesWire } from "@/lib/examples-wire";
-import { EXAMPLE_GROUPS, COMPARISONS } from "@/lib/examples";
+import { EXAMPLE_GROUPS, COMPARISONS, allExampleTerms } from "@/lib/examples";
+import { lastSlotOf, slotOf, slotRange } from "@/lib/trend-time";
 import { sortByCoolness } from "@/lib/coolness";
 import { track, trackOutbound } from "@/lib/analytics";
 import { QUERYING_DISABLED, QUERYING_DISABLED_LABEL } from "@/lib/maintenance";
@@ -39,7 +41,21 @@ const COMPARE_COLORS = ["#1f6feb", "#ff6600", "#1a7f37", "#cf222e", "#8250df"];
 // How many result rows show before the "Show more" expander.
 const PREVIEW_ROWS = 8;
 
+// Typing pause before a term set is committed (queried, put in the URL).
+const COMMIT_MS = 500;
+
+// Terms whose histogram ships in `/examples.json` (lowercase, like the index).
+const GALLERY_TERMS = new Set(allExampleTerms());
+
 type Q = { id: string; text: string };
+type ChartBucket = { key: number; docCount: number };
+const qsKey = (qs: Q[]) => qs.map((q) => `${q.id}:${q.text.trim()}`).join("|");
+
+// A failed call's copy, and whether it's the neutral kill-switch notice.
+const errorNote = (e: unknown) => ({
+  text: friendlyError(e),
+  muted: e instanceof ApiError && e.code === "disabled",
+});
 
 // A result doc tagged with the compared term whose query it matched, so the
 // merged list can highlight each row by its own term and (when filtered) we know
@@ -98,20 +114,25 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
   // `/examples.json` (see that route + page.tsx) rather than blocking the server
   // render. Until they arrive the gallery still renders its full structure -
   // titles, links, stories from the static catalog - with flat sparklines; only
-  // the line shapes fill in once this resolves.
+  // the line shapes fill in once this resolves. They also feed the main chart
+  // for any catalog term (see `dataFor`).
   const [examplesData, setExamplesData] = useState<ExamplesWire | null>(null);
+  const [examplesFailed, setExamplesFailed] = useState(false);
   useEffect(() => {
     const ctrl = new AbortController();
     fetch("/examples.json", { signal: ctrl.signal })
       .then((r) => (r.ok ? r.json() : null))
       .then((d: ExamplesWire | null) => {
         if (d?.terms) setExamplesData(d);
+        else setExamplesFailed(true);
       })
       .catch(() => {
-        /* gallery sparklines just stay flat if this fails; not load-bearing */
+        // sparklines stay flat; catalog terms fall back to live aggregates
+        if (!ctrl.signal.aborted) setExamplesFailed(true);
       });
     return () => ctrl.abort();
   }, []);
+  const galleryReady = !!examplesData || examplesFailed;
 
   // All the knobs below are seeded from the URL (parsed server-side and handed
   // in as `initial`), then mirrored back into the URL by the sync effect so the
@@ -119,10 +140,19 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
   const [queries, setQueries] = useState<Q[]>(() =>
     initial.terms.map((text, i) => ({ id: `q${i}`, text })),
   );
-  const [aggs, setAggs] = useState<Record<string, AggResponse>>({});
-  // True while the date-histograms for the current terms are in flight, so the
-  // chart can show a loading state on first paint instead of the empty prompt.
-  const [aggsLoading, setAggsLoading] = useState(true);
+  // The term set the chart, results and URL follow: `queries` as typed,
+  // committed after a COMMIT_MS pause (or at once on Enter / blur / remove /
+  // pick). Every query is a Search DB miss that an abort doesn't cancel, so
+  // typing "kubernetes" must be one query, not one per prefix.
+  const [committed, setCommitted] = useState<Q[]>(queries);
+  const commitTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const commit = useCallback((next: Q[], delay = 0) => {
+    clearTimeout(commitTimer.current);
+    const apply = () =>
+      setCommitted((prev) => (qsKey(prev) === qsKey(next) ? prev : next));
+    if (delay) commitTimer.current = setTimeout(apply, delay);
+    else apply();
+  }, []);
 
   const [sort, setSort] = useState<SortMode>(initial.sort);
   const [range, setRange] = useState<Range | null>(
@@ -139,41 +169,42 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
     initial.only ?? null,
   );
 
-  const [docs, setDocs] = useState<MergedDoc[]>([]);
-  // The term-set the current `docs` belong to; lets the results effect tell a
-  // genuinely new comparison (blank + reload) from a same-terms refetch.
-  const lastTermsKey = useRef("");
+  // Live histograms, keyed by lowercased term, plus the last failure per term
+  // (tagged with the term set it happened under, so re-committing retries).
+  const [live, setLive] = useState<Record<string, ChartBucket[]>>({});
+  const [aggErrs, setAggErrs] = useState<Record<string, { key: string; e: unknown }>>({});
+  const inflight = useRef(new Set<string>());
+
+  // Latest merged results, tagged with the request they answer; older results
+  // stay on screen (dimmed) while a new request is in flight.
+  const [results, setResults] = useState<{ key: string; docs: MergedDoc[] } | null>(null);
+  const [searchErr, setSearchErr] = useState<{ key: string; e: unknown } | null>(null);
   // The first results run is the URL-seeded load (default terms or a shared
   // link), not a user-initiated search - skip logging it so the GA `search`
   // event counts what people actually look up, not every page open.
   const firstSearch = useRef(true);
-  // Analytics has its own stable-term debounce. The result search is intentionally
-  // responsive, but recording every intermediate prefix ("a", "an", "ant"...)
-  // made GA's search/compare reports mostly keyboard telemetry.
   const lastAnalyticsTermsKey = useRef("");
-  const [searching, setSearching] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  // Whether the result list is expanded past the first PREVIEW_ROWS.
-  const [expanded, setExpanded] = useState(false);
+  // The term set whose result list is expanded past the first PREVIEW_ROWS; a
+  // new term set collapses back to the preview.
+  const [expandedFor, setExpandedFor] = useState<string | null>(null);
 
   const colorById = useMemo(
     () => Object.fromEntries(queries.map((q, i) => [q.id, PALETTE[i % PALETTE.length]])),
     [queries],
   );
 
-  // The gallery histograms, rebuilt from the compact wire form once. Declared up
-  // here (above the chart `series` memo) because while live querying is disabled
-  // the chart is fed from THESE cached buckets - keyed by term - instead of a
-  // live aggregate, so clicking a gallery example still draws its lines.
+  // The gallery histograms, rebuilt from the compact wire form once, and the
+  // slot that was in progress when that cache was built (lines end there).
   const termBuckets = useMemo(
     () => (examplesData ? decodeExamplesWire(examplesData) : {}),
     [examplesData],
   );
+  const galleryEnd = useMemo(() => lastSlotOf(termBuckets), [termBuckets]);
 
-  /* ---- which terms feed the result list ---------------------------- */
+  /* ---- which terms feed the chart and the result list -------------- */
   const allTerms = useMemo(
-    () => queries.map((q) => q.text.trim()).filter(Boolean),
-    [queries],
+    () => committed.map((q) => q.text.trim()).filter(Boolean),
+    [committed],
   );
   // The "only show from <term>" filter only applies while that term is actually
   // one of the compared terms; otherwise it's stale and we show everything.
@@ -186,86 +217,77 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
   // Stable string keys for the effects (avoids re-firing on array identity).
   const termsKey = activeTerms.join("|");
   const queryTermsKey = allTerms.join("|");
+  const chartKey = allTerms.map((t) => t.toLowerCase()).join("|");
 
   const fromIso = range ? new Date(range.fromMs).toISOString() : undefined;
   const toIso = range ? new Date(range.toMs).toISOString() : undefined;
+  const searchKey = [termsKey, sort, fromIso, toIso, commentsOnly].join("\n");
   // The single term whose live SDK snippet the code panel shows.
   const codeTerm = activeTerms[0] ?? "";
 
   /* ---- keep the URL in sync so the view is shareable --------------- */
   useEffect(() => {
-    const search = buildShareSearch({
+    const next = buildShareSearch({
       terms: allTerms,
       sort,
       from: range?.fromMs,
       to: range?.toMs,
       type: commentsOnly ? "comment" : undefined,
       only: filterActive ? termFilter! : undefined,
-      active: 0,
     });
-    const url = `${window.location.pathname}${search ? `?${search}` : ""}`;
-    // replaceState (not the Next router): update the address bar without a
-    // navigation/refetch or piling a history entry on every keystroke.
-    window.history.replaceState(null, "", url);
+    // GA counts every history change as a page_view, so write only when the
+    // address bar doesn't already encode this view (the first render, or a bare
+    // "/" still showing the default terms), and let rapid clicks settle first.
+    const cur = buildShareSearch(
+      parseShareState(new URLSearchParams(window.location.search)),
+    );
+    if (next === cur) return;
+    const t = setTimeout(() => {
+      // replaceState (not the Next router): no navigation/refetch, no history entry.
+      window.history.replaceState(
+        null,
+        "",
+        `${window.location.pathname}${next ? `?${next}` : ""}`,
+      );
+    }, COMMIT_MS);
+    return () => clearTimeout(t);
   }, [allTerms, sort, range, commentsOnly, termFilter, filterActive]);
 
-  /* ---- aggregations: one date-histogram per non-empty term --------- */
+  /* ---- chart data: gallery histograms first, live aggregates else -- */
+  // A catalog term's histogram is already in `/examples.json` (the same
+  // aggregate, refreshed daily), so it never costs a live query: the default
+  // openai/anthropic view was ~49% of launch traffic. Live results also back
+  // up the gallery the other way: a failed aggregate still draws if cached.
+  const dataFor = useCallback(
+    (term: string): { buckets: ChartBucket[]; endSlot?: number } | null => {
+      const k = term.toLowerCase();
+      if (termBuckets[k]?.length) return { buckets: termBuckets[k], endSlot: galleryEnd };
+      return live[k] ? { buckets: live[k] } : null;
+    },
+    [termBuckets, galleryEnd, live],
+  );
+
   useEffect(() => {
-    // Querying disabled: the chart reads cached `termBuckets` directly (see the
-    // `series` memo), so never fire a live aggregate.
+    // Querying disabled: the chart reads cached `termBuckets` only.
     if (QUERYING_DISABLED) return;
-    const ctrl = new AbortController();
-    const active = queries.filter((q) => q.text.trim());
-    if (active.length === 0) {
-      setAggs({});
-      setAggsLoading(false);
-      return;
+    for (const t of chartKey ? chartKey.split("|") : []) {
+      if (dataFor(t) || inflight.current.has(t) || aggErrs[t]?.key === chartKey) continue;
+      // Catalog term: wait for the gallery rather than racing it with a query.
+      if (GALLERY_TERMS.has(t) && !galleryReady) continue;
+      inflight.current.add(t);
+      // No abort: the server runs the query regardless, so keep the result.
+      aggregate({ q: t })
+        .then((r) => setLive((m) => ({ ...m, [t]: r.buckets })))
+        .catch((e) => setAggErrs((m) => ({ ...m, [t]: { key: chartKey, e } })))
+        .finally(() => inflight.current.delete(t));
     }
-    setAggsLoading(true);
-    const t = setTimeout(async () => {
-      try {
-        const results = await Promise.all(
-          active.map((q) => aggregate({ q: q.text, signal: ctrl.signal })),
-        );
-        if (ctrl.signal.aborted) return;
-        const map: Record<string, AggResponse> = {};
-        active.forEach((q, i) => {
-          map[q.id] = results[i];
-        });
-        setAggs(map);
-        setAggsLoading(false);
-        setError(null);
-      } catch (e) {
-        if (!ctrl.signal.aborted) {
-          setError((e as Error).message);
-          setAggsLoading(false);
-        }
-      }
-    }, 300);
-    return () => {
-      clearTimeout(t);
-      ctrl.abort();
-    };
-  }, [queries]);
+  }, [chartKey, dataFor, galleryReady, aggErrs]);
 
   /* ---- merged results across the active terms, scoped to filters --- */
   useEffect(() => {
     if (QUERYING_DISABLED) return; // no live result drill-down while disabled
     const terms = termsKey ? termsKey.split("|") : [];
-    if (terms.length === 0) {
-      setDocs([]);
-      setSearching(false);
-      lastTermsKey.current = "";
-      return;
-    }
-    // A genuinely new term-set → drop old docs so the list shows its loading
-    // state and collapses back to the preview. Sort / filter changes keep the
-    // old docs visible to avoid flicker mid-refetch.
-    if (lastTermsKey.current !== termsKey) {
-      setDocs([]);
-      setExpanded(false);
-      lastTermsKey.current = termsKey;
-    }
+    if (terms.length === 0) return;
 
     const queryTerms = queryTermsKey ? queryTermsKey.split("|") : [];
     let shouldTrack = false;
@@ -277,123 +299,116 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
         queryTerms.length > 0 && lastAnalyticsTermsKey.current !== queryTermsKey;
     }
 
-    setSearching(true);
+    const key = [termsKey, sort, fromIso, toIso, commentsOnly].join("\n");
     const ctrl = new AbortController();
-    let analyticsTimer: ReturnType<typeof setTimeout> | undefined;
-    const t = setTimeout(() => {
-      Promise.all(
-        terms.map((term) =>
-          searchPosts({
-            q: term,
-            sort,
-            limit: 30,
-            from: fromIso,
-            to: toIso,
-            type: commentsOnly ? "comment" : undefined,
-            signal: ctrl.signal,
-          }).then((s) => s.docs.map((d) => ({ ...d, _term: term }) as MergedDoc)),
-        ),
-      )
-        .then((lists) => {
-          if (ctrl.signal.aborted) return;
-          const merged = mergeDocs(lists, sort);
-          setDocs(merged);
-          setSearching(false);
-          if (shouldTrack) {
-            // Wait until the term set has stayed unchanged after results arrive.
-            // Effect cleanup cancels this when the user types another character.
-            analyticsTimer = setTimeout(() => {
-              const label = queryTerms.join(" vs ");
-              track("search", {
-                terms: label,
-                term_count: queryTerms.length,
-                sort,
-              });
-              if (queryTerms.length > 1) {
-                track("compare", { terms: label, term_count: queryTerms.length });
-              }
-              if (merged.length === 0) track("zero_results", { terms: label, sort });
-              lastAnalyticsTermsKey.current = queryTermsKey;
-            }, 750);
+    Promise.all(
+      terms.map((term) =>
+        searchPosts({
+          q: term,
+          sort,
+          limit: 30,
+          from: fromIso,
+          to: toIso,
+          type: commentsOnly ? "comment" : undefined,
+          signal: ctrl.signal,
+        }).then((s) => s.docs.map((d) => ({ ...d, _term: term }) as MergedDoc)),
+      ),
+    )
+      .then((lists) => {
+        if (ctrl.signal.aborted) return;
+        const merged = mergeDocs(lists, sort);
+        setResults({ key, docs: merged });
+        if (shouldTrack) {
+          const label = queryTerms.join(" vs ");
+          track("search", { terms: label, term_count: queryTerms.length, sort });
+          if (queryTerms.length > 1) {
+            track("compare", { terms: label, term_count: queryTerms.length });
           }
-        })
-        .catch((e) => {
-          if (!ctrl.signal.aborted && e?.name !== "AbortError") {
-            setError((e as Error).message);
-            setSearching(false);
-          }
-        });
-    }, 120);
-    return () => {
-      clearTimeout(t);
-      if (analyticsTimer) clearTimeout(analyticsTimer);
-      ctrl.abort();
-    };
+          if (merged.length === 0) track("zero_results", { terms: label, sort });
+          lastAnalyticsTermsKey.current = queryTermsKey;
+        }
+      })
+      .catch((e) => {
+        if (!ctrl.signal.aborted && e?.name !== "AbortError") setSearchErr({ key, e });
+      });
+    return () => ctrl.abort();
   }, [termsKey, queryTermsKey, sort, fromIso, toIso, commentsOnly]);
+
+  const hasTerms = activeTerms.length > 0;
+  const searchError = hasTerms && searchErr?.key === searchKey ? searchErr.e : null;
+  const searching =
+    hasTerms && !QUERYING_DISABLED && results?.key !== searchKey && !searchError;
+  const docs = hasTerms ? results?.docs ?? [] : [];
+  const expanded = expandedFor === termsKey;
 
   /* ---- chart series ------------------------------------------------ */
   const series: Series[] = useMemo(
     () =>
-      queries
+      committed
         .filter((q) => q.text.trim())
-        .map((q) => ({
-          id: q.id,
-          text: q.text.trim(),
-          color: colorById[q.id],
-          // While live querying is disabled, draw from the CDN-cached gallery
-          // histograms (keyed by term) instead of a live aggregate.
-          buckets: QUERYING_DISABLED
-            ? termBuckets[q.text.trim()] ?? []
-            : aggs[q.id]?.buckets ?? [],
-        })),
-    [queries, aggs, colorById, termBuckets],
+        .map((q, i) => {
+          const d = dataFor(q.text.trim());
+          return {
+            id: q.id,
+            text: q.text.trim(),
+            color: colorById[q.id] ?? PALETTE[i % PALETTE.length],
+            buckets: d?.buckets ?? [],
+            endSlot: d?.endSlot,
+          };
+        }),
+    [committed, dataFor, colorById],
   );
+  const failedTerm = allTerms.find(
+    (t) => !dataFor(t) && aggErrs[t.toLowerCase()]?.key === chartKey,
+  );
+  const chartError = failedTerm ? aggErrs[failedTerm.toLowerCase()].e : null;
+  const chartLoading = allTerms.some((t) => {
+    const k = t.toLowerCase();
+    if (dataFor(t) || aggErrs[k]?.key === chartKey) return false;
+    // Disabled: only the gallery can still arrive.
+    return QUERYING_DISABLED ? GALLERY_TERMS.has(k) && !galleryReady : true;
+  });
 
   /* ---- input row mutations ----------------------------------------- */
-  const updateQuery = (id: string, text: string) =>
-    setQueries((qs) => qs.map((q) => (q.id === id ? { ...q, text } : q)));
-  const removeQuery = (id: string) =>
-    setQueries((qs) => (qs.length > 1 ? qs.filter((q) => q.id !== id) : qs));
-  const addQuery = (text = "") =>
-    setQueries((qs) =>
-      qs.length >= MAX_QUERIES ? qs : [...qs, { id: newId(), text }],
-    );
+  const updateQuery = (id: string, text: string) => {
+    const next = queries.map((q) => (q.id === id ? { ...q, text } : q));
+    setQueries(next);
+    commit(next, COMMIT_MS);
+  };
+  const removeQuery = (id: string) => {
+    if (queries.length <= 1) return;
+    const next = queries.filter((q) => q.id !== id);
+    setQueries(next);
+    commit(next);
+  };
+  const addQuery = (text = "") => {
+    if (queries.length >= MAX_QUERIES) return;
+    setQueries([...queries, { id: newId(), text }]);
+  };
 
   // Load a gallery example's term(s) in place and jump back to the top, clearing
   // any active filters/range so the fresh comparison shows from scratch.
-  // useCallback (only setters + refs inside, all stable) keeps this identity
-  // fixed across renders so the React.memo'd sparklines that receive it as
-  // `onPick` don't all re-render when an unrelated bit of state changes.
-  const pickTerms = useCallback((terms: string[]) => {
-    const picked = terms.slice(0, MAX_QUERIES);
-    track("example_pick", {
-      terms: picked.join(" vs "),
-      term_count: picked.length,
-    });
-    setQueries(picked.map((text, i) => ({ id: `q${i}`, text })));
-    setTermFilter(null);
-    setCommentsOnly(false);
-    setRange(null);
-    setExpanded(false);
-    // Drop the old results and the old chart right away so the loading state
-    // shows immediately on click, instead of the previous comparison lingering
-    // until the new queries resolve. Clearing `aggs` (not just flipping the
-    // loading flag) empties the chart's series so it shows "loading…" exactly
-    // like the initial load, rather than the old lines. (Resetting lastTermsKey
-    // makes the results effect treat this as a fresh term-set too.)
-    //
-    // While querying is disabled there's no live load to await: the chart swaps
-    // straight to the picked term's cached buckets, so skip the loading resets
-    // (they'd otherwise leave the chart stuck on "loading…" forever).
-    if (!QUERYING_DISABLED) {
-      setDocs([]);
-      setSearching(true);
-      setAggs({});
-      setAggsLoading(true);
-      lastTermsKey.current = "";
-    }
-    window.scrollTo({ top: 0, behavior: "smooth" });
-  }, []);
+  // useCallback (only setters, refs and the stable `commit` inside) keeps this
+  // identity fixed across renders so the React.memo'd sparklines that receive it
+  // as `onPick` don't all re-render when an unrelated bit of state changes.
+  const pickTerms = useCallback(
+    (terms: string[]) => {
+      const picked = terms
+        .slice(0, MAX_QUERIES)
+        .map((text, i) => ({ id: `q${i}`, text }));
+      track("example_pick", {
+        terms: terms.slice(0, MAX_QUERIES).join(" vs "),
+        term_count: picked.length,
+      });
+      setQueries(picked);
+      commit(picked);
+      setTermFilter(null);
+      setCommentsOnly(false);
+      setRange(null);
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    },
+    [commit],
+  );
 
   // "newest first" doesn't make sense once you've scoped to a window, so its tab
   // is disabled while a range is set. If it happened to be the active sort when
@@ -420,14 +435,9 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
       return next;
     });
 
-  // Clicking a result's timestamp scopes the view to that post's calendar month
-  // (UTC, to match the month-aligned histogram buckets).
-  const pickMonth = (iso: string) => {
-    const d = new Date(iso);
-    const fromMs = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1);
-    const toMs = Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1);
-    selectRange({ fromMs, toMs });
-  };
+  // Clicking a result's timestamp scopes the view to the chart slot (30d
+  // histogram bucket) that contains the post, i.e. the bar it was counted in.
+  const pickMonth = (iso: string) => selectRange(slotRange(slotOf(new Date(iso).getTime())));
 
   // The gallery's comparisons, ranked by the internal "coolness" metric, with
   // the vercel-vs-cloudflare matchup pinned to the front regardless of score.
@@ -455,9 +465,10 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
           term,
           color: COMPARE_COLORS[i % COMPARE_COLORS.length],
           buckets: termBuckets[term] ?? [],
+          endSlot: galleryEnd,
         })),
       })),
-    [comparisons, termBuckets],
+    [comparisons, termBuckets, galleryEnd],
   );
   const groupItems = useMemo(
     () =>
@@ -467,10 +478,12 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
         blurb: g.blurb,
         items: g.terms.map((term) => ({
           term,
-          series: [{ term, color: SINGLE_COLOR, buckets: termBuckets[term] ?? [] }],
+          series: [
+            { term, color: SINGLE_COLOR, buckets: termBuckets[term] ?? [], endSlot: galleryEnd },
+          ],
         })),
       })),
-    [termBuckets],
+    [termBuckets, galleryEnd],
   );
 
   const visibleDocs = expanded ? docs : docs.slice(0, PREVIEW_ROWS);
@@ -544,7 +557,7 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
       {/* Compare input row (doubles as the chart legend) ------------- */}
       <div className="bg-[color:var(--hn-bg)] px-2 pt-3">
         <div className="flex flex-wrap items-stretch gap-2">
-          {queries.map((q) => (
+          {queries.map((q, i) => (
             <div
               key={q.id}
               className="trend-chip"
@@ -557,15 +570,21 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
               <input
                 value={q.text}
                 placeholder="add a term…"
+                aria-label={`term ${i + 1}`}
                 // Disabled: the chips become a read-only legend for the picked
                 // example; free-text search is off while the DB is down.
                 readOnly={QUERYING_DISABLED}
                 onChange={(e) => updateQuery(q.id, e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") commit(queries);
+                }}
+                onBlur={() => commit(queries)}
               />
               {!QUERYING_DISABLED && queries.length > 1 && (
                 <button
                   className="trend-x"
-                  title="remove"
+                  title="remove term"
+                  aria-label="remove term"
                   onClick={() => removeQuery(q.id)}
                 >
                   ×
@@ -587,9 +606,8 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
           series={series}
           range={range}
           onSelectRange={selectRange}
-          // Disabled: show the loading frame only until the cached gallery data
-          // lands, then render its lines (there is no live aggregate to await).
-          loading={QUERYING_DISABLED ? !examplesData : aggsLoading}
+          loading={chartLoading}
+          note={chartError ? errorNote(chartError) : null}
         />
       </div>
 
@@ -658,11 +676,24 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
               only comments
             </button>
           </div>
-          {!searching && docs.length > 0 && (
-            // a fun "scale" footnote - desktop-only so it doesn't crowd a phone.
-            <span className="ml-auto hidden sm:inline whitespace-nowrap text-[10px] text-[color:var(--hn-subtle)]">
-              {CORPUS} keys queried
+          {searchError ? (
+            // a failed search: one line in this always-present row, so nothing
+            // below shifts; the previous results (if any) stay listed.
+            <span
+              className={`ml-auto truncate text-[10px] ${
+                errorNote(searchError).muted ? "text-[color:var(--hn-subtle)]" : "text-red-600"
+              }`}
+            >
+              {errorNote(searchError).text}
             </span>
+          ) : (
+            !searching &&
+            docs.length > 0 && (
+              // a fun "scale" footnote - desktop-only so it doesn't crowd a phone.
+              <span className="ml-auto hidden sm:inline whitespace-nowrap text-[10px] text-[color:var(--hn-subtle)]">
+                {CORPUS} keys queried
+              </span>
+            )
           )}
         </div>
       </div>
@@ -715,14 +746,14 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
         className="bg-[color:var(--hn-bg)] px-2 pb-6"
         style={{ minHeight: allTerms.length > 0 ? 300 : 0 }}
       >
-        {error ? (
-          <div className="text-red-600 text-sm py-3">{error}</div>
-        ) : searching && docs.length === 0 ? (
+        {searching && docs.length === 0 ? (
           <div className="px-3 py-6 text-[color:var(--hn-subtle)] text-sm">
             searching…
           </div>
-        ) : (
-          <>
+        ) : searchError && docs.length === 0 ? null : (
+          // The previous list stays (dimmed) while a new search is in flight or
+          // after it failed, instead of blanking the page.
+          <div style={{ opacity: results && results.key !== searchKey ? 0.5 : 1 }}>
             <Results
               docs={visibleDocs}
               query={codeTerm}
@@ -730,11 +761,11 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
               onPickMonth={pickMonth}
             />
             {!expanded && hiddenCount > 0 && (
-              <button className="lot-more" onClick={() => setExpanded(true)}>
+              <button className="lot-more" onClick={() => setExpandedFor(termsKey)}>
                 Show more ↓
               </button>
             )}
-          </>
+          </div>
         )}
       </div>
         </>

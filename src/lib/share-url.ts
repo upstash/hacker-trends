@@ -2,19 +2,17 @@
  * Shareable view state <-> URL query string.
  *
  * The whole point: every knob that changes what's on screen (the compared
- * terms, the sort, the selected date range, the type facet filter, and
- * which result tab is open) lives in the URL so a link reproduces the exact
- * view. The server `page.tsx` parses the incoming `?…` to seed initial state
+ * terms, the sort, the selected date range, and the result filters) lives
+ * in the URL so a link reproduces the exact view. The server `page.tsx` parses the incoming `?…` to seed initial state
  * (no hydration flash); the client rewrites it via `history.replaceState` as
  * the user pokes around.
  *
  * Schema (every field optional; absent == default):
  *   q       repeated, one per compared term, in order   ?q=openai&q=anthropic
  *   sort    relevance|score|discussed|recent            omitted when "relevance"
- *   from,to selected range as epoch-ms (month-aligned)   both present or neither
+ *   from,to selected range as epoch-ms (30d-slot-aligned) both present or neither
  *   type    active "by type" facet filter
  *   only    "only show from <term>" filter (merged mode) one of the q terms
- *   active  index into the term list of the open tab     omitted when 0
  */
 
 import type { SortMode } from "./hn-query";
@@ -37,8 +35,6 @@ export type ShareState = {
   type?: string;
   /** "only show from <term>" filter for the merged result list (one of `terms`). */
   only?: string;
-  /** Index into `terms` of the open result tab. */
-  active: number;
 };
 
 function asInt(v: string | null): number | undefined {
@@ -61,13 +57,6 @@ export function parseShareState(sp: URLSearchParams): ShareState {
   const to = asInt(sp.get("to"));
   const hasRange = from !== undefined && to !== undefined && to > from;
 
-  const list = terms.length ? terms : DEFAULT_TERMS;
-  const activeRaw = asInt(sp.get("active"));
-  const active =
-    activeRaw !== undefined && activeRaw >= 0 && activeRaw < list.length
-      ? Math.floor(activeRaw)
-      : 0;
-
   return {
     terms: terms.length ? terms : [...DEFAULT_TERMS],
     sort,
@@ -75,7 +64,6 @@ export function parseShareState(sp: URLSearchParams): ShareState {
     to: hasRange ? to : undefined,
     type: sp.get("type")?.trim() || undefined,
     only: sp.get("only")?.trim() || undefined,
-    active,
   };
 }
 
@@ -93,6 +81,5 @@ export function buildShareSearch(state: ShareState): string {
   }
   if (state.type) sp.set("type", state.type);
   if (state.only) sp.set("only", state.only);
-  if (state.active > 0) sp.set("active", String(state.active));
   return sp.toString();
 }

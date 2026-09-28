@@ -13,7 +13,6 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import {
   abs,
-  allTrendTerms,
   termToSlug,
   comparisonSlug,
   slugToTerm,
@@ -26,6 +25,8 @@ import {
   HISTORY_FROM_YEAR,
   HISTORY_TO_YEAR,
   HISTORY_SPAN_YEARS,
+  OG_BASE,
+  TWITTER_BASE,
 } from "@/lib/site";
 import { getTermLanding, trendSummary } from "@/lib/landing-data";
 import { analysisForSlug } from "@/lib/trend-analysis";
@@ -35,18 +36,18 @@ import { LandingHeader, LandingFooter } from "@/app/components/LandingChrome";
 import { OutboundLink } from "@/app/components/OutboundLink";
 import { RedisSearchCTA } from "@/app/components/RedisSearchCTA";
 
-// Rendered on demand from live Upstash Redis Search (via the `@upstash/redis`
-// SDK), then cached by the CDN. We do NOT prerender at build time: the index is
-// refreshed out of band so a build-time snapshot would go stale, and statically
-// generating every catalog term would fan out hundreds of SDK queries during the
-// build. `force-dynamic` renders each page on the first request and the response
-// is CDN-cached from there (this matches the prior behavior, where the data
-// layer's `fetch(..., {cache:"no-store"})` already kept these routes dynamic).
-export const dynamic = "force-dynamic";
+// ISR: nothing is prerendered at build (the build never touches the DB); each
+// page renders on its first request, is cached, and regenerates in the
+// background at most every `revalidate` seconds. `force-static` is required:
+// the Upstash SDK fetches with `no-store`, which would otherwise mark the route
+// dynamic and re-query the Search DB on every hit. 6h bounds how long a page
+// rendered while the kill switch was on (no stories) stays cached.
+export const dynamic = "force-static";
+export const revalidate = 21600;
 export const dynamicParams = true;
 
 export function generateStaticParams() {
-  return allTrendTerms().map((term) => ({ term: termToSlug(term) }));
+  return [];
 }
 
 function titleCase(term: string): string {
@@ -70,12 +71,13 @@ export async function generateMetadata({
     alternates: { canonical: path },
     robots: isIndexedTermSlug(slug) ? undefined : { index: false, follow: true },
     openGraph: {
+      ...OG_BASE,
       title: `${display} - Hacker News trend`,
       description,
       url: path,
       type: "article",
     },
-    twitter: { title: `${display} - Hacker News trend`, description },
+    twitter: { ...TWITTER_BASE, title: `${display} - Hacker News trend`, description },
   };
 }
 
@@ -86,7 +88,7 @@ export default async function TrendPage({
 }) {
   const { term: slug } = await params;
   const term = slugToTerm(slug);
-  const { buckets, stats, stories } = await getTermLanding(term);
+  const { buckets, endSlot, stats, stories } = await getTermLanding(term);
 
   // An off-catalog term with literally no mentions isn't worth an indexable
   // page; send it to the live tool instead of rendering an empty chart.
@@ -182,7 +184,7 @@ export default async function TrendPage({
       {/* chart */}
       <div className="px-3 pt-4">
         <div className="border border-[color:var(--hn-subtle)]/30 rounded bg-white p-2">
-          <StaticTrend series={[{ term, color: "#ff6600", buckets }]} />
+          <StaticTrend series={[{ term, color: "#ff6600", buckets, endSlot }]} />
         </div>
         <div className="mt-2">
           <Link

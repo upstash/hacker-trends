@@ -1,26 +1,31 @@
 /**
  * Programmatic SEO landing page: `/compare/[slug]` (e.g. `openai-vs-anthropic`).
  *
- * One page per curated comparison from the catalog (and any ad-hoc `a-vs-b`
- * slug): overlaid mention-over-time lines, the narrative of how the lead
- * changes hands, per-term stats, and a link straight into the interactive
- * overlay. Targets the high-intent "X vs Y" long-tail.
+ * One page per curated comparison from the catalog: overlaid mention-over-time
+ * lines, the narrative of how the lead changes hands, per-term stats, and a
+ * link straight into the interactive overlay. Targets the high-intent "X vs Y"
+ * long-tail. Ad-hoc slugs 404 (a reordered curated set redirects): each unique
+ * URL would otherwise cost up to MAX_TERMS live aggregates + story searches.
  */
 
 import type { Metadata } from "next";
 import Link from "next/link";
-import { notFound } from "next/navigation";
+import { notFound, permanentRedirect } from "next/navigation";
 import {
   abs,
   comparisonSlug,
   comparisonBySlug,
-  allComparisonSlugs,
   slugToTerm,
+  termToSlug,
   sampleOtherComparisons,
   isIndexedComparisonSlug,
   HISTORY_FROM_YEAR,
   HISTORY_TO_YEAR,
+  OG_BASE,
+  TWITTER_BASE,
 } from "@/lib/site";
+import { COMPARISONS, type Comparison } from "@/lib/examples";
+import { MAX_TERMS } from "@/lib/share-url";
 import { getComparisonLanding } from "@/lib/landing-data";
 import { StaticTrend } from "@/app/components/StaticTrend";
 import { JsonLd } from "@/app/components/JsonLd";
@@ -28,29 +33,34 @@ import { LandingHeader, LandingFooter } from "@/app/components/LandingChrome";
 import { OutboundLink } from "@/app/components/OutboundLink";
 import { RedisSearchCTA } from "@/app/components/RedisSearchCTA";
 
-// Rendered on demand from live Upstash Redis Search (via the `@upstash/redis`
-// SDK), then CDN-cached - we don't prerender at build time (the index refreshes
-// out of band, and prerendering every slug would fan out hundreds of SDK queries
-// during the build). Matches the prior `fetch(..., {cache:"no-store"})` behavior
-// that already kept this route dynamic.
-export const dynamic = "force-dynamic";
+// ISR, same as /trends/[term]: nothing prerendered at build (no DB access),
+// rendered on first request, cached, regenerated at most every `revalidate`
+// seconds. `force-static` keeps the SDK's `no-store` fetches from turning every
+// hit into live Search queries.
+export const dynamic = "force-static";
+export const revalidate = 21600;
 export const dynamicParams = true;
 
 const COMPARE_COLORS = ["#1f6feb", "#ff6600", "#1a7f37", "#cf222e", "#8250df"];
 
 export function generateStaticParams() {
-  return allComparisonSlugs().map((slug) => ({ slug }));
+  return [];
 }
 
-/** Resolve a slug to its ordered term list: a curated comparison if known, else
- *  split an ad-hoc `a-vs-b-vs-c` slug and de-slug each part. */
-function termsForSlug(slug: string): string[] {
+const setKey = (terms: string[]) => terms.map(termToSlug).sort().join("|");
+
+/** The curated comparison for a slug. A reordering of a curated set (e.g.
+ *  `anthropic-vs-openai`) redirects to its canonical slug; anything else 404s. */
+function curatedForSlug(slug: string): Comparison {
   const curated = comparisonBySlug(slug);
-  if (curated) return curated.terms;
-  return slug
-    .split("-vs-")
-    .map((p) => slugToTerm(p))
-    .filter(Boolean);
+  if (curated) return curated;
+  const parts = slug.split("-vs-");
+  if (parts.length >= 2 && parts.length <= MAX_TERMS) {
+    const key = setKey(parts.map(slugToTerm));
+    const match = COMPARISONS.find((c) => setKey(c.terms) === key);
+    if (match) permanentRedirect(`/compare/${comparisonSlug(match.terms)}`);
+  }
+  notFound();
 }
 
 function joinTerms(terms: string[]): string {
@@ -63,8 +73,8 @@ export async function generateMetadata({
   params: Promise<{ slug: string }>;
 }): Promise<Metadata> {
   const { slug } = await params;
-  const terms = termsForSlug(slug);
-  if (terms.length < 2) return {};
+  const terms = comparisonBySlug(slug)?.terms;
+  if (!terms) return {};
   const label = joinTerms(terms);
   const title = `${label} on Hacker News - popularity over time, compared`;
   const description = `${label}: how each trended across ${HISTORY_FROM_YEAR}–${HISTORY_TO_YEAR} of Hacker News mentions, overlaid on one chart. See when the lead changed hands. Powered by Upstash Redis Search.`;
@@ -74,8 +84,14 @@ export async function generateMetadata({
     description,
     alternates: { canonical: path },
     robots: isIndexedComparisonSlug(slug) ? undefined : { index: false, follow: true },
-    openGraph: { title: `${label} - Hacker News trends`, description, url: path, type: "article" },
-    twitter: { title: `${label} - Hacker News trends`, description },
+    openGraph: {
+      ...OG_BASE,
+      title: `${label} - Hacker News trends`,
+      description,
+      url: path,
+      type: "article",
+    },
+    twitter: { ...TWITTER_BASE, title: `${label} - Hacker News trends`, description },
   };
 }
 
@@ -85,10 +101,8 @@ export default async function ComparePage({
   params: Promise<{ slug: string }>;
 }) {
   const { slug } = await params;
-  const terms = termsForSlug(slug);
-  if (terms.length < 2) notFound();
-
-  const curated = comparisonBySlug(slug);
+  const curated = curatedForSlug(slug);
+  const terms = curated.terms;
   const { series } = await getComparisonLanding(terms);
 
   const total = series.reduce((n, s) => n + s.stats.total, 0);
@@ -210,7 +224,7 @@ export default async function ComparePage({
       <RedisSearchCTA location="compare_page" subject="This comparison" />
 
       {/* the story */}
-      {curated?.story && (
+      {curated.story && (
         <div className="px-3 pt-6">
           <h2 className="text-[14px] font-bold">How the lead changed hands</h2>
           <p className="text-[13px] mt-1 max-w-[760px] leading-relaxed">

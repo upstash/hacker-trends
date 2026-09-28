@@ -12,6 +12,7 @@
  */
 
 import type { Metadata } from "next";
+import { notFound } from "next/navigation";
 import { ArchivedItem } from "./ArchivedItem";
 
 export const dynamic = "force-dynamic";
@@ -28,5 +29,8 @@ export default async function ArchivedPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  return <ArchivedItem id={id} />;
+  // HN ids are positive integers; anything else is a guaranteed miss.
+  if (!/^[1-9]\d{0,9}$/.test(id)) notFound();
+  // Keyed so a different item remounts with fresh (loading) state.
+  return <ArchivedItem key={id} id={id} />;
 }

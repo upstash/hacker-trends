@@ -9,7 +9,7 @@
  * sparkline, with year-axis labels.
  */
 
-import { MIN_MS, MAX_MS, SLOTS, slotOf } from "@/lib/trend-time";
+import { MIN_MS, MONTH_MS, SLOTS, slotOf, trendPaths } from "@/lib/trend-time";
 
 type MonthBucket = { key: number; docCount: number };
 
@@ -17,21 +17,14 @@ export type StaticSeries = {
   term: string;
   color: string;
   buckets: MonthBucket[];
+  /** In-progress slot of this data (drawn dashed); defaults to the current one. */
+  endSlot?: number;
 };
 
 const VIEW_W = 1000;
 const VIEW_H = 240;
 const PAD_T = 12;
 const PAD_B = 22;
-
-const END_YEAR = new Date(MAX_MS).getUTCFullYear();
-const YEAR_TICKS = Array.from(
-  { length: Math.floor((END_YEAR - 2008) / 3) + 1 },
-  (_, i) => 2008 + i * 3,
-);
-
-const xOfMs = (ms: number) => ((ms - MIN_MS) / (MAX_MS - MIN_MS)) * VIEW_W;
-const slotCenterX = (i: number) => ((i + 0.5) / SLOTS) * VIEW_W;
 
 function densify(buckets: MonthBucket[]): Float64Array {
   const dense = new Float64Array(SLOTS);
@@ -43,23 +36,30 @@ function densify(buckets: MonthBucket[]): Float64Array {
 }
 
 export function StaticTrend({ series }: { series: StaticSeries[] }) {
+  // The x-axis runs through the data's in-progress slot (drawn dashed).
+  const end = Math.min(SLOTS - 1, Math.max(...series.map((s) => s.endSlot ?? SLOTS - 1)));
+  const n = end + 1;
+  const xOfMs = (ms: number) => ((ms - MIN_MS) / (n * MONTH_MS)) * VIEW_W;
+  const slotCenterX = (i: number) => ((i + 0.5) / n) * VIEW_W;
+  const endYear = new Date(MIN_MS + n * MONTH_MS).getUTCFullYear();
+  const yearTicks = Array.from(
+    { length: Math.floor((endYear - 2008) / 3) + 1 },
+    (_, i) => 2008 + i * 3,
+  ).filter((y) => xOfMs(Date.UTC(y, 0, 1)) < VIEW_W - 20);
+
   const dense = series.map((s) => ({ s, values: densify(s.buckets) }));
   let globalMax = 0;
-  for (const d of dense) for (const v of d.values) if (v > globalMax) globalMax = v;
+  for (const d of dense)
+    for (let i = 0; i <= end; i++) if (d.values[i] > globalMax) globalMax = d.values[i];
   globalMax = globalMax || 1;
 
   const yOf = (v: number) =>
     VIEW_H - PAD_B - (v / globalMax) * (VIEW_H - PAD_T - PAD_B);
 
-  const paths = dense.map(({ s, values }) => {
-    const pts = Array.from(values, (v, i) => `${slotCenterX(i)},${yOf(v)}`);
-    const base = VIEW_H - PAD_B;
-    return {
-      color: s.color,
-      line: `M${pts.join("L")}`,
-      area: `M${slotCenterX(0)},${base}L${pts.join("L")}L${slotCenterX(SLOTS - 1)},${base}Z`,
-    };
-  });
+  const paths = dense.map(({ s, values }) => ({
+    color: s.color,
+    ...trendPaths(values, { lo: 0, end, x: slotCenterX, y: yOf, base: VIEW_H - PAD_B }),
+  }));
 
   return (
     <svg
@@ -70,7 +70,7 @@ export function StaticTrend({ series }: { series: StaticSeries[] }) {
       style={{ width: "100%", height: "auto", display: "block" }}
     >
       {/* year guides + labels */}
-      {YEAR_TICKS.map((y) => {
+      {yearTicks.map((y) => {
         const x = xOfMs(Date.UTC(y, 0, 1));
         return (
           <g key={y}>
@@ -106,6 +106,18 @@ export function StaticTrend({ series }: { series: StaticSeries[] }) {
           stroke={p.color}
           strokeWidth={1.6}
           strokeLinejoin="round"
+          vectorEffect="non-scaling-stroke"
+        />
+      ))}
+      {/* the in-progress slot, dashed: a partial count, not a drop */}
+      {paths.map((p, i) => (
+        <path
+          key={`p${i}`}
+          d={p.partial}
+          fill="none"
+          stroke={p.color}
+          strokeWidth={1.6}
+          strokeDasharray="3 3"
           vectorEffect="non-scaling-stroke"
         />
       ))}

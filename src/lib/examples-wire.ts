@@ -14,6 +14,12 @@
  * term (slots are 0–~240, no property names) and rebuild the `{key, docCount}`
  * shape on arrival. This is ~10× smaller and keeps the client contract intact.
  *
+ * Slot indices are unchanged by the move to the epoch-aligned grid: the old
+ * encoder rounded each bucket key against a 2007-01-01 origin, and every bucket
+ * sits 16 days (0.53 slot) past a slot there, so it rounded up to exactly the
+ * index the new origin floors it to. Wire data persisted before the move (the
+ * baked snapshot, CDN copies) therefore decodes to the right buckets as-is.
+ *
  * This module is client-safe: it only touches the slot math in trend-time.ts,
  * never the Upstash token, so it can be imported from "use client" files.
  */
@@ -46,8 +52,7 @@ export function encodeExamplesWire(data: {
 }
 
 /** Client-side: rebuild the `{key, docCount}[]` map every consumer expects.
- *  `key` is the slot's canonical month start, which round-trips through `slotOf`
- *  to the same slot - exactly what densify/coolness key off of. */
+ *  `key` is the slot start, i.e. the exact bucket key Upstash returned. */
 export function decodeExamplesWire(
   wire: ExamplesWire,
 ): Record<string, MonthCount[]> {
