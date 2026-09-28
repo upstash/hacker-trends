@@ -13,7 +13,7 @@ import {
 import { buildShareSearch, parseShareState, type ShareState } from "@/lib/share-url";
 import { decodeExamplesWire, type ExamplesWire } from "@/lib/examples-wire";
 import { EXAMPLE_GROUPS, COMPARISONS, allExampleTerms } from "@/lib/examples";
-import { lastSlotOf, slotOf, slotRange } from "@/lib/trend-time";
+import { SLOTS, lastSlotOf, slotOf, slotRange } from "@/lib/trend-time";
 import { sortByCoolness } from "@/lib/coolness";
 import { track, trackOutbound } from "@/lib/analytics";
 import { QUERYING_DISABLED, QUERYING_DISABLED_LABEL } from "@/lib/maintenance";
@@ -145,11 +145,23 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
   // pick). Every query is a Search DB miss that an abort doesn't cancel, so
   // typing "kubernetes" must be one query, not one per prefix.
   const [committed, setCommitted] = useState<Q[]>(queries);
+  // Live histograms, keyed by lowercased term, plus the failure per term
+  // (dropped when the term leaves the committed set, see `commit`).
+  const [live, setLive] = useState<Record<string, ChartBucket[]>>({});
+  const [aggErrs, setAggErrs] = useState<Record<string, unknown>>({});
   const commitTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const commit = useCallback((next: Q[], delay = 0) => {
     clearTimeout(commitTimer.current);
-    const apply = () =>
+    const apply = () => {
       setCommitted((prev) => (qsKey(prev) === qsKey(next) ? prev : next));
+      // Forget failures for terms that left the set, so bringing one back
+      // retries it.
+      const keep = new Set(next.map((q) => q.text.trim().toLowerCase()));
+      setAggErrs((m) => {
+        const kept = Object.fromEntries(Object.entries(m).filter(([t]) => keep.has(t)));
+        return Object.keys(kept).length === Object.keys(m).length ? m : kept;
+      });
+    };
     if (delay) commitTimer.current = setTimeout(apply, delay);
     else apply();
   }, []);
@@ -169,10 +181,6 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
     initial.only ?? null,
   );
 
-  // Live histograms, keyed by lowercased term, plus the last failure per term
-  // (tagged with the term set it happened under, so re-committing retries).
-  const [live, setLive] = useState<Record<string, ChartBucket[]>>({});
-  const [aggErrs, setAggErrs] = useState<Record<string, { key: string; e: unknown }>>({});
   const inflight = useRef(new Set<string>());
 
   // Latest merged results, tagged with the request they answer; older results
@@ -200,6 +208,9 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
     [examplesData],
   );
   const galleryEnd = useMemo(() => lastSlotOf(termBuckets), [termBuckets]);
+  // `/examples.json` falls back to an old baked snapshot on a cache miss; only
+  // trust it for the main chart while it reaches the last slot or two.
+  const galleryFresh = galleryEnd >= SLOTS - 2;
 
   /* ---- which terms feed the chart and the result list -------------- */
   const allTerms = useMemo(
@@ -256,29 +267,31 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
   /* ---- chart data: gallery histograms first, live aggregates else -- */
   // A catalog term's histogram is already in `/examples.json` (the same
   // aggregate, refreshed daily), so it never costs a live query: the default
-  // openai/anthropic view was ~49% of launch traffic. Live results also back
-  // up the gallery the other way: a failed aggregate still draws if cached.
+  // openai/anthropic view was ~49% of launch traffic. A stale gallery (the
+  // snapshot fallback) still backs up a failed aggregate, or disabled mode.
   const dataFor = useCallback(
     (term: string): { buckets: ChartBucket[]; endSlot?: number } | null => {
       const k = term.toLowerCase();
-      if (termBuckets[k]?.length) return { buckets: termBuckets[k], endSlot: galleryEnd };
-      return live[k] ? { buckets: live[k] } : null;
+      const cached = termBuckets[k]?.length ? { buckets: termBuckets[k], endSlot: galleryEnd } : null;
+      if (cached && galleryFresh) return cached;
+      if (live[k]) return { buckets: live[k] };
+      return cached && (k in aggErrs || QUERYING_DISABLED) ? cached : null;
     },
-    [termBuckets, galleryEnd, live],
+    [termBuckets, galleryEnd, galleryFresh, live, aggErrs],
   );
 
   useEffect(() => {
     // Querying disabled: the chart reads cached `termBuckets` only.
     if (QUERYING_DISABLED) return;
     for (const t of chartKey ? chartKey.split("|") : []) {
-      if (dataFor(t) || inflight.current.has(t) || aggErrs[t]?.key === chartKey) continue;
+      if (dataFor(t) || inflight.current.has(t) || t in aggErrs) continue;
       // Catalog term: wait for the gallery rather than racing it with a query.
       if (GALLERY_TERMS.has(t) && !galleryReady) continue;
       inflight.current.add(t);
       // No abort: the server runs the query regardless, so keep the result.
       aggregate({ q: t })
         .then((r) => setLive((m) => ({ ...m, [t]: r.buckets })))
-        .catch((e) => setAggErrs((m) => ({ ...m, [t]: { key: chartKey, e } })))
+        .catch((e) => setAggErrs((m) => ({ ...m, [t]: e })))
         .finally(() => inflight.current.delete(t));
     }
   }, [chartKey, dataFor, galleryReady, aggErrs]);
@@ -318,6 +331,9 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
         if (ctrl.signal.aborted) return;
         const merged = mergeDocs(lists, sort);
         setResults({ key, docs: merged });
+        // Only the current request can land here (older ones are aborted), so
+        // any error on screen is stale now.
+        setSearchErr(null);
         if (shouldTrack) {
           const label = queryTerms.join(" vs ");
           track("search", { terms: label, term_count: queryTerms.length, sort });
@@ -359,12 +375,12 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
     [committed, dataFor, colorById],
   );
   const failedTerm = allTerms.find(
-    (t) => !dataFor(t) && aggErrs[t.toLowerCase()]?.key === chartKey,
+    (t) => !dataFor(t) && t.toLowerCase() in aggErrs,
   );
-  const chartError = failedTerm ? aggErrs[failedTerm.toLowerCase()].e : null;
+  const chartError = failedTerm ? aggErrs[failedTerm.toLowerCase()] : null;
   const chartLoading = allTerms.some((t) => {
     const k = t.toLowerCase();
-    if (dataFor(t) || aggErrs[k]?.key === chartKey) return false;
+    if (dataFor(t) || k in aggErrs) return false;
     // Disabled: only the gallery can still arrive.
     return QUERYING_DISABLED ? GALLERY_TERMS.has(k) && !galleryReady : true;
   });

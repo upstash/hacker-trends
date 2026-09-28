@@ -25,6 +25,7 @@ import {
   OG_BASE,
   TWITTER_BASE,
   comparisonSlug,
+  slugToTerm,
   termToSlug,
 } from "@/lib/site";
 import { HackerTrends } from "./HackerTrends";
@@ -54,7 +55,14 @@ export async function generateMetadata({
 }): Promise<Metadata> {
   const sp = await toParams(searchParams);
   const terms = sp.has("q") ? parseShareState(sp).terms : [];
-  const slug = terms.length > 1 ? comparisonSlug(terms) : termToSlug(terms[0] ?? "");
+  // Slugs are lossy ("c++" -> "c"); only point at a term card when every term
+  // survives the slug round trip, else keep the generic one.
+  const exact = terms.every((t) => slugToTerm(termToSlug(t)).toLowerCase() === t.toLowerCase());
+  const slug = !exact
+    ? ""
+    : terms.length > 1
+      ? comparisonSlug(terms)
+      : termToSlug(terms[0] ?? "");
   // Homepage title carries the "Hacker News" keyword (HOME_TITLE) so the page it
   // ranks for ("hacker news trends") is reinforced by the title, not just the
   // exact-match domain. title.absolute bypasses the layout's "%s · Hacker Trends"

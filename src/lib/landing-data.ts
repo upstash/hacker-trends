@@ -73,9 +73,9 @@ export type TermSeries = {
 };
 
 /** A term's histogram: the examples cache, else a live aggregate (skipped while
- *  querying is disabled), else the baked snapshot. Throws when a live aggregate
- *  fails with nothing to fall back to, so ISR keeps the previous page (or
- *  retries) instead of caching an empty chart. */
+ *  querying is disabled), else the baked snapshot. Throws when there is no data
+ *  because the live aggregate failed or was skipped, so ISR keeps the previous
+ *  page (or retries later) instead of caching an empty "no mentions" page. */
 async function seriesFor(term: string, live: boolean): Promise<TermSeries> {
   const g = await galleryCache();
   const cached = g?.terms[term];
@@ -96,6 +96,7 @@ async function seriesFor(term: string, live: boolean): Promise<TermSeries> {
   const baked = s.terms[term];
   if (baked?.length) return { buckets: baked, endSlot: s.endSlot };
   if (failure) throw failure;
+  if (!live) throw new Error(`querying disabled, no cached histogram for "${term}"`);
   return { buckets: [], endSlot: SLOTS - 1 };
 }
 
