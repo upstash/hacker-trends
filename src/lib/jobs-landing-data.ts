@@ -30,7 +30,8 @@
  * components only, never from a "use client" file.
  */
 
-import { hnRedis, runAggregate, runSearch } from "@/lib/hn-index";
+import { hnRedis } from "@/lib/hn-index";
+import { budgetedAggregate, budgetedSearch } from "@/lib/live-query";
 import { type HnDoc, type SortMode } from "@/lib/hn-query";
 import { readJobsGalleryParts } from "@/lib/jobs-gallery-data";
 import { drillIndex } from "@/lib/jobs-index";
@@ -104,7 +105,7 @@ async function partBuckets(part: string, ctx: Ctx): Promise<MonthCount[]> {
     // Same gate the live hooks use: the dedicated `hnjobs` index when ready (no
     // scope arm), else the shared `hn` index narrowed by `scope=jobs`.
     const { index, scope } = drillIndex();
-    const agg = await runAggregate(redis!, { q: part, scope, index });
+    const agg = await budgetedAggregate(redis!, { q: part, scope, index });
     return agg.buckets.map((b) => ({ key: b.key, docCount: b.docCount }));
   } catch {
     ctx.degraded = true;
@@ -318,7 +319,7 @@ async function fetchPostings(
   if (!ctx.live) return [];
   const { index, scope } = drillIndex();
   try {
-    return await runSearch(redis!, {
+    return await budgetedSearch(redis!, {
       q: part,
       scope,
       index,
@@ -479,7 +480,7 @@ async function remoteShare(term: string, ctx: Ctx): Promise<number | null> {
       if (!ctx.live) return null;
       try {
         const { index, scope } = drillIndex();
-        const agg = await runAggregate(redis!, { q: `${part} remote`, scope, index });
+        const agg = await budgetedAggregate(redis!, { q: `${part} remote`, scope, index });
         return agg.buckets.map((b) => ({ key: b.key, docCount: b.docCount }));
       } catch {
         ctx.degraded = true;

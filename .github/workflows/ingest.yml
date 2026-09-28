@@ -154,7 +154,7 @@ jobs:
         env:
           UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
           UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
-        run: bun scripts/prime-jobs-gallery.ts
+        run: bun scripts/prime-jobs-gallery.ts --write
 
       - name: Prime the examples gallery cache
         # Twin of the step above for the main landing-page gallery. The deployed

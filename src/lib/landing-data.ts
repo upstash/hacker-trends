@@ -14,7 +14,8 @@
  * Server-only (reads the Upstash token); never import from a "use client" file.
  */
 
-import { hnRedis, runAggregate, runSearch } from "@/lib/hn-index";
+import { hnRedis } from "@/lib/hn-index";
+import { budgetedAggregate, budgetedSearch } from "@/lib/live-query";
 import { readExamplesCache, type MonthCount } from "@/lib/examples-data";
 import { decodeExamplesWire, type ExamplesWire } from "@/lib/examples-wire";
 import { isQueryingDisabled } from "@/lib/runtime-flags";
@@ -83,7 +84,7 @@ async function seriesFor(term: string, live: boolean): Promise<TermSeries> {
   let failure: unknown = null;
   if (live && redis) {
     try {
-      const agg = await runAggregate(redis, { q: term });
+      const agg = await budgetedAggregate(redis, { q: term });
       return {
         buckets: agg.buckets.map((b) => ({ key: b.key, docCount: b.docCount })),
         endSlot: SLOTS - 1,
@@ -105,7 +106,7 @@ async function seriesFor(term: string, live: boolean): Promise<TermSeries> {
 async function topStories(term: string, limit = 12): Promise<HnDoc[]> {
   if (!redis) return [];
   try {
-    return await runSearch(redis, { q: term, sort: "score", limit, type: "story" });
+    return await budgetedSearch(redis, { q: term, sort: "score", limit, type: "story" });
   } catch {
     return [];
   }
