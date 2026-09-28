@@ -4,7 +4,7 @@
  * `src/lib/trend-analysis.ts` can be authored from actual numbers (never made
  * up). Read-only; safe with the deployed token.
  *
- *   bun --env-file=.env.local scripts/dump-tier1.ts > /tmp/tier1-data.json
+ *   bun --conditions=react-server --env-file=.env.local scripts/dump-tier1.ts > /tmp/tier1-data.json
  */
 export {};
 import { TIER1_SLUGS } from "../src/lib/tiers";
