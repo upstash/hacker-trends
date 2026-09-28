@@ -34,7 +34,8 @@ export function buildOgChart(
       const slot = slotOf(b.key);
       if (slot >= 0 && slot < SLOTS) values[slot] += b.docCount;
     }
-    return { color: s.color, values };
+    // each line ends at its own in-progress slot (cached vs live can differ)
+    return { color: s.color, values, end: Math.min(end, s.endSlot ?? SLOTS - 1) };
   });
 
   let max = 0;
@@ -50,7 +51,7 @@ export function buildOgChart(
     // Peak over complete slots only: a partial count isn't a peak month.
     let peakI = 0;
     let peakV = 0;
-    for (let i = 0; i < end; i++) {
+    for (let i = 0; i < d.end; i++) {
       if (d.values[i] > peakV) {
         peakV = d.values[i];
         peakI = i;
@@ -58,7 +59,7 @@ export function buildOgChart(
     }
     return {
       color: d.color,
-      ...trendPaths(d.values, { lo: 0, end, x: xOf, y: yOf, base }),
+      ...trendPaths(d.values, { lo: 0, end: d.end, x: xOf, y: yOf, base }),
       peakX: xOf(peakI),
       peakY: yOf(peakV),
       peakValue: peakV,

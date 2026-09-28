@@ -103,7 +103,13 @@ export const MiniTrend = memo(function MiniTrend({ series, story, onPick }: Prop
       // and ~190 gallery sparklines blew the homepage HTML past 5 MB.
       dense.map(({ s, values }) => ({
         color: s.color,
-        ...trendPaths(values, { lo: 0, end, x: slotCenterX, y: yOf, base: VIEW_H - PAD_B }),
+        ...trendPaths(values, {
+          lo: 0,
+          end: Math.min(end, s.endSlot ?? SLOTS - 1),
+          x: slotCenterX,
+          y: yOf,
+          base: VIEW_H - PAD_B,
+        }),
       })),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [dense, globalMax],

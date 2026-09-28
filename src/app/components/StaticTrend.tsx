@@ -56,9 +56,17 @@ export function StaticTrend({ series }: { series: StaticSeries[] }) {
   const yOf = (v: number) =>
     VIEW_H - PAD_B - (v / globalMax) * (VIEW_H - PAD_T - PAD_B);
 
+  // Each line ends at its own in-progress slot (cached and live series can
+  // differ by one), so a series never dashes down to a slot it has no data for.
   const paths = dense.map(({ s, values }) => ({
     color: s.color,
-    ...trendPaths(values, { lo: 0, end, x: slotCenterX, y: yOf, base: VIEW_H - PAD_B }),
+    ...trendPaths(values, {
+      lo: 0,
+      end: Math.min(end, s.endSlot ?? SLOTS - 1),
+      x: slotCenterX,
+      y: yOf,
+      base: VIEW_H - PAD_B,
+    }),
   }));
 
   return (
