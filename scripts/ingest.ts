@@ -259,12 +259,18 @@ function hsetCommand(h: Record<string, string | number>): unknown[] {
   return ["hset", ...args];
 }
 
-/** Flush many commands as parallel BATCH_SIZE pipelines. Waits for every
- *  pipeline to settle before rethrowing, so nothing is left in flight. */
-async function flushAll(commands: unknown[][]): Promise<void> {
+/** Flush many commands as BATCH_SIZE pipelines: in parallel, or in order when
+ *  `ordered` so a failure can only ever leave a written prefix (the live tail
+ *  resumes from the newest indexed item, so a hole below it would be skipped
+ *  for good). Waits for every pipeline to settle before rethrowing. */
+async function flushAll(commands: unknown[][], ordered = false): Promise<void> {
   const batches: unknown[][][] = [];
   for (let i = 0; i < commands.length; i += BATCH_SIZE) {
     batches.push(commands.slice(i, i + BATCH_SIZE));
+  }
+  if (ordered) {
+    for (const b of batches) await flushBatch(b);
+    return;
   }
   const results = await Promise.allSettled(batches.map(flushBatch));
   const failed = results.find((r) => r.status === "rejected");
@@ -388,7 +394,7 @@ type HnApiItem = {
 
 const HN_API = "https://hacker-news.firebaseio.com/v0";
 const LIVE_FETCH_CONCURRENCY = 64;
-// IDs fetched and flushed per chunk. Each chunk is fully written before the next
+// IDs fetched and flushed per chunk. Each chunk is written in ID order before the next
 // starts, so the newest indexed item is always a safe resume point.
 const LIVE_CHUNK_IDS = 5_000;
 // Per-run budgets. 64-way fetching does ~300 items/s (measured Sep 2026) and HN
@@ -405,7 +411,8 @@ async function fetchJsonWithRetry<T>(url: string, tries = 4): Promise<T> {
   let last: unknown;
   for (let attempt = 1; attempt <= tries; attempt++) {
     try {
-      const res = await fetch(url);
+      // Bounded so one stalled connection can't eat the run's time budget.
+      const res = await fetch(url, { signal: AbortSignal.timeout(15_000) });
       if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
       return (await res.json()) as T;
     } catch (e) {
@@ -528,7 +535,7 @@ async function fillTail(latestId: number, maxId: number): Promise<void> {
   while (next <= maxId && Date.now() - t0 < LIVE_TAIL_BUDGET_MS) {
     const last = Math.min(maxId, next + LIVE_CHUNK_IDS - 1);
     const r = liveCommands(await fetchItems(next, last), false);
-    await flushAll(r.commands);
+    await flushAll(r.commands, true);
     written += r.written;
     skipped += r.skipped;
     next = last + 1;
