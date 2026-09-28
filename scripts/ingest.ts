@@ -1,16 +1,31 @@
 /**
- * Stream a Hacker News monthly Parquet file from HuggingFace and HSET each
- * eligible item into Upstash Redis, batched through the pipeline endpoint.
+ * Load Hacker News items into Upstash Redis as `hn:<id>` hashes, batched
+ * through the pipeline endpoint. Two sources:
  *
- * Before ingesting, this also creates the `hn` Redis Search index (idempotent;
+ *  - Monthly Parquet files from HuggingFace (open-index/hacker-news), for bulk
+ *    backfills. That dataset stopped publishing on 2026-08-23, so a missing
+ *    current or previous month is expected and non-fatal.
+ *  - The official HN Firebase API (`--live`), for the daily cron: fills the ID
+ *    tail after the newest indexed item in bounded, resumable chunks, then
+ *    re-fetches the last ~3 days to refresh scores/comment counts and delete
+ *    items that died since. This alone keeps the index current.
+ *
+ * Before writing, this also creates the `hn` Redis Search index (idempotent;
  * skipped if it already exists). RediSearch indexes both existing and future
  * keys matching the `hn:` prefix, so the hashes written below are picked up
  * automatically.
+ *
+ * Every mode WRITES to the Redis in UPSTASH_REDIS_REST_URL/TOKEN. Run bare (or
+ * with --help) for usage; that path never touches the DB.
  *
  * Usage:
  *   bun scripts/ingest.ts 2026 03          (one month)
  *   bun scripts/ingest.ts 2026 Q1          (a quarter)
  *   bun scripts/ingest.ts 2024 1 2024 12   (a range)
+ *   bun scripts/ingest.ts --live           (Firebase tail + 3-day refresh)
+ *
+ * HN_LOCAL_ARCHIVE=/path/to/hn-archive reads `data/<y>/<y>-<m>.parquet` from a
+ * local copy of the dataset instead of HuggingFace when the file exists there.
  */
 
 import {
@@ -22,10 +37,9 @@ import { compressors } from "hyparquet-compressors";
 import { Redis, s } from "@upstash/redis";
 import { existsSync } from "node:fs";
 
-// Local copy of the open-index/hacker-news parquet archive (downloaded
-// 2026-06-25). When a month's file is present here we read it off disk instead
-// of range-fetching from HuggingFace - faster and works while HF is flaky.
-const LOCAL_ARCHIVE = "/Users/kimirti/proj/hn-archive";
+// Opt-in local copy of the open-index/hacker-news parquet archive. Faster than
+// range-fetching from HuggingFace and works while HF is flaky.
+const LOCAL_ARCHIVE = process.env.HN_LOCAL_ARCHIVE;
 
 const REDIS_URL = process.env.UPSTASH_REDIS_REST_URL!;
 const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN!;
@@ -239,15 +253,50 @@ async function flushBatch(commands: unknown[][]): Promise<void> {
   }
 }
 
-async function ingestMonth(year: string, month: string) {
-  const localPath = `${LOCAL_ARCHIVE}/data/${year}/${year}-${month}.parquet`;
-  const url = `https://huggingface.co/datasets/open-index/hacker-news/resolve/main/data/${year}/${year}-${month}.parquet`;
+function hsetCommand(h: Record<string, string | number>): unknown[] {
+  const args: (string | number)[] = [`hn:${h.id}`];
+  for (const [k, v] of Object.entries(h)) args.push(k, v);
+  return ["hset", ...args];
+}
+
+/** Flush many commands as parallel BATCH_SIZE pipelines. Waits for every
+ *  pipeline to settle before rethrowing, so nothing is left in flight. */
+async function flushAll(commands: unknown[][]): Promise<void> {
+  const batches: unknown[][][] = [];
+  for (let i = 0; i < commands.length; i += BATCH_SIZE) {
+    batches.push(commands.slice(i, i + BATCH_SIZE));
+  }
+  const results = await Promise.allSettled(batches.map(flushBatch));
+  const failed = results.find((r) => r.status === "rejected");
+  if (failed) throw failed.reason;
+}
+
+type MonthResult = "ok" | "missing" | "failed";
+
+function parquetUrl(year: string, month: string): string {
+  return `https://huggingface.co/datasets/open-index/hacker-news/resolve/main/data/${year}/${year}-${month}.parquet`;
+}
+
+/** Read one month's Parquet and HSET its items. Returns "missing" (no retry)
+ *  when HuggingFace has no file for the month. */
+async function ingestMonth(year: string, month: string): Promise<"ok" | "missing"> {
+  const localPath = LOCAL_ARCHIVE
+    ? `${LOCAL_ARCHIVE}/data/${year}/${year}-${month}.parquet`
+    : null;
+  const url = parquetUrl(year, month);
   const t0 = Date.now();
-  const useLocal = existsSync(localPath);
+  const useLocal = !!localPath && existsSync(localPath);
+
+  if (!useLocal) {
+    // Probe first so a missing month is distinguishable from a transient error.
+    const head = await fetch(url, { method: "HEAD" });
+    if (head.status === 404) return "missing";
+    if (!head.ok) throw new Error(`HEAD ${url} -> ${head.status}`);
+  }
   console.log(`[${year}-${month}] reading parquet ${useLocal ? `(local ${localPath})` : "(HuggingFace)"}…`);
 
   const buf = useLocal
-    ? await asyncBufferFromFile(localPath)
+    ? await asyncBufferFromFile(localPath!)
     : await asyncBufferFromUrl({ url });
   const rows = (await parquetReadObjects({
     file: buf,
@@ -273,16 +322,33 @@ async function ingestMonth(year: string, month: string) {
   const inflight = new Set<Promise<void>>();
   let written = 0;
   let skipped = 0;
+  // First pipeline failure. Pipelines never reject (the error is captured
+  // here), so none go unhandled; we stop queueing and let the rest settle
+  // before throwing, so a retry never overlaps this attempt's writes.
+  let failure: unknown = null;
+
+  const queue = (batch: unknown[][]) => {
+    const p: Promise<void> = flushBatch(batch)
+      .then(
+        () => {
+          written += batch.length;
+        },
+        (e) => {
+          failure ??= e;
+        },
+      )
+      .finally(() => inflight.delete(p));
+    inflight.add(p);
+  };
 
   for (const raw of rows) {
+    if (failure) break;
     const h = rowToHash(raw);
     if (!h) {
       skipped++;
       continue;
     }
-    const args: (string | number)[] = [`hn:${h.id}`];
-    for (const [k, v] of Object.entries(h)) args.push(k, v);
-    pending.push(["hset", ...args]);
+    pending.push(hsetCommand(h));
 
     if (pending.length >= BATCH_SIZE) {
       const batch = pending;
@@ -290,29 +356,19 @@ async function ingestMonth(year: string, month: string) {
       while (inflight.size >= CONCURRENCY) {
         await Promise.race(inflight);
       }
-      const p = flushBatch(batch).then(() => {
-        written += batch.length;
-      });
-      inflight.add(p);
-      p.finally(() => inflight.delete(p));
+      queue(batch);
     }
   }
 
-  if (pending.length > 0) {
-    const batch = pending;
-    pending = [];
-    const p = flushBatch(batch).then(() => {
-      written += batch.length;
-    });
-    inflight.add(p);
-    p.finally(() => inflight.delete(p));
-  }
+  if (!failure && pending.length > 0) queue(pending);
   await Promise.all(inflight);
+  if (failure) throw failure;
 
   const elapsed = (Date.now() - t0) / 1000;
   console.log(
     `[${year}-${month}] DONE written=${written.toLocaleString()} skipped=${skipped.toLocaleString()} in ${elapsed.toFixed(1)}s (${(written / elapsed).toFixed(0)}/s)`
   );
+  return "ok";
 }
 
 type HnApiItem = {
@@ -330,8 +386,20 @@ type HnApiItem = {
   dead?: boolean;
 };
 
+const HN_API = "https://hacker-news.firebaseio.com/v0";
 const LIVE_FETCH_CONCURRENCY = 64;
-const MAX_LIVE_DELTA = 250_000;
+// IDs fetched and flushed per chunk. Each chunk is fully written before the next
+// starts, so the newest indexed item is always a safe resume point.
+const LIVE_CHUNK_IDS = 5_000;
+// Per-run budgets. 64-way fetching does ~300 items/s (measured Sep 2026) and HN
+// adds ~14k IDs/day, so the tail clears ~200k IDs per run (a backlog catches up
+// over a few runs) and the refresh ~45k, leaving room in the 30-min Action for
+// the gallery primes that follow.
+const LIVE_TAIL_BUDGET_MS = 12 * 60_000;
+const REFRESH_BUDGET_MS = 5 * 60_000;
+// Items are first fetched minutes after posting (score 1, no comments). Re-fetch
+// the last few days so scores, comment counts and dead/deleted flags settle.
+const REFRESH_WINDOW_MS = 3 * 24 * 60 * 60_000;
 
 async function fetchJsonWithRetry<T>(url: string, tries = 4): Promise<T> {
   let last: unknown;
@@ -368,119 +436,227 @@ function apiItemToHash(item: HnApiItem | null): Record<string, string | number> 
   });
 }
 
+/** Fetch items first..last (inclusive) from Firebase, LIVE_FETCH_CONCURRENCY at
+ *  a time. Every worker settles before this returns or throws. */
+async function fetchItems(first: number, last: number): Promise<(HnApiItem | null)[]> {
+  const items = new Array<HnApiItem | null>(last - first + 1);
+  let cursor = 0;
+  let failure: unknown = null;
+  await Promise.all(
+    Array.from({ length: Math.min(LIVE_FETCH_CONCURRENCY, items.length) }, async () => {
+      while (cursor < items.length && !failure) {
+        const i = cursor++;
+        try {
+          items[i] = await fetchJsonWithRetry<HnApiItem | null>(`${HN_API}/item/${first + i}.json`);
+        } catch (e) {
+          failure ??= e;
+        }
+      }
+    }),
+  );
+  if (failure) throw failure;
+  return items;
+}
+
+/** HSETs for live items; with `refresh`, also DELs items that are now dead or
+ *  deleted (they were indexed while still alive). */
+function liveCommands(items: (HnApiItem | null)[], refresh: boolean) {
+  const commands: unknown[][] = [];
+  let deleted = 0;
+  let skipped = 0;
+  for (const item of items) {
+    const h = apiItemToHash(item);
+    if (h) {
+      commands.push(hsetCommand(h));
+    } else if (refresh && item && (item.dead || item.deleted)) {
+      commands.push(["del", `hn:${item.id}`]);
+      deleted++;
+    } else {
+      skipped++;
+    }
+  }
+  return { commands, written: commands.length - deleted, deleted, skipped };
+}
+
+type IndexedRow = { key?: string; data?: { id?: string | number } };
+
+function indexedId(row: IndexedRow | undefined): number {
+  return Number(row?.data?.id ?? row?.key?.replace(/^hn:/, ""));
+}
+
 /**
- * Fill the gap between the latest indexed item and HN's live max item.
+ * Keep the index current from HN's official Firebase API, independent of the
+ * HuggingFace archive (which stopped publishing in August 2026):
  *
- * The monthly HuggingFace archive is still the efficient authoritative bulk
- * source, but it stopped updating for five days in August 2026. The old cron
- * could therefore be green while serving stale data. Fetching only the ID tail
- * from HN's official Firebase API makes each normal daily run small (~10-15k
- * IDs) and keeps freshness independent of an upstream archive pause.
+ *  1. Tail: fill IDs after the newest indexed item up to HN's max item, in
+ *     LIVE_CHUNK_IDS chunks, until LIVE_TAIL_BUDGET_MS runs out. The next run
+ *     resumes from the newest indexed item, so a large gap drains over several
+ *     runs instead of failing.
+ *  2. Refresh: re-fetch items indexed in the last REFRESH_WINDOW_MS (up to the
+ *     newest item from before this run), newest first, re-HSET them with current
+ *     score/comment counts and DEL the ones that are now dead or deleted.
  */
-async function ingestLiveDelta(): Promise<void> {
+async function ingestLive(): Promise<void> {
   const index = redis.search.index({ name: INDEX_NAME, schema: HN_SCHEMA });
   const [rows, maxId] = await Promise.all([
     index.query({ orderBy: { time: "DESC" }, limit: 1 }),
-    fetchJsonWithRetry<number>("https://hacker-news.firebaseio.com/v0/maxitem.json"),
+    fetchJsonWithRetry<number>(`${HN_API}/maxitem.json`),
   ]);
-  const newest = rows[0] as { key?: string; data?: { id?: string | number } } | undefined;
-  const latestId = Number(newest?.data?.id ?? newest?.key?.replace(/^hn:/, ""));
-  if (!Number.isFinite(latestId)) throw new Error("could not determine latest indexed HN id");
+  const latestId = indexedId(rows[0] as IndexedRow | undefined);
+  if (!Number.isFinite(latestId)) {
+    throw new Error("could not determine latest indexed HN id (empty index? ingest a month first)");
+  }
 
+  await fillTail(latestId, maxId);
+  await refreshRecent(index, latestId);
+}
+
+async function fillTail(latestId: number, maxId: number): Promise<void> {
   const delta = maxId - latestId;
   if (delta <= 0) {
     console.log(`[live] already caught up (indexed=${latestId}, HN max=${maxId})`);
     return;
   }
-  if (delta > MAX_LIVE_DELTA) {
-    throw new Error(
-      `[live] refusing ${delta.toLocaleString()}-ID delta (limit ${MAX_LIVE_DELTA.toLocaleString()}); backfill the missing monthly archive first`,
-    );
-  }
-
-  console.log(`[live] filling IDs ${latestId + 1}..${maxId} (${delta.toLocaleString()}) from HN Firebase…`);
+  console.log(
+    `[live] ${delta.toLocaleString()} IDs behind (indexed=${latestId}, HN max=${maxId}); budget ${LIVE_TAIL_BUDGET_MS / 60_000}min`,
+  );
   const t0 = Date.now();
   let written = 0;
   let skipped = 0;
+  let next = latestId + 1;
 
-  for (let first = latestId + 1; first <= maxId; first += BATCH_SIZE) {
-    const last = Math.min(maxId, first + BATCH_SIZE - 1);
-    const items = new Array<HnApiItem | null>(last - first + 1);
-    let cursor = 0;
-    await Promise.all(
-      Array.from({ length: Math.min(LIVE_FETCH_CONCURRENCY, items.length) }, async () => {
-        while (cursor < items.length) {
-          const i = cursor++;
-          items[i] = await fetchJsonWithRetry<HnApiItem | null>(
-            `https://hacker-news.firebaseio.com/v0/item/${first + i}.json`,
-          );
-        }
-      }),
+  while (next <= maxId && Date.now() - t0 < LIVE_TAIL_BUDGET_MS) {
+    const last = Math.min(maxId, next + LIVE_CHUNK_IDS - 1);
+    const r = liveCommands(await fetchItems(next, last), false);
+    await flushAll(r.commands);
+    written += r.written;
+    skipped += r.skipped;
+    next = last + 1;
+    console.log(
+      `[live] through ${last} (${(last - latestId).toLocaleString()}/${delta.toLocaleString()}) written=${written.toLocaleString()} in ${((Date.now() - t0) / 1000).toFixed(0)}s`,
     );
-
-    const commands: unknown[][] = [];
-    for (const item of items) {
-      const h = apiItemToHash(item);
-      if (!h) {
-        skipped++;
-        continue;
-      }
-      const args: (string | number)[] = [`hn:${h.id}`];
-      for (const [k, v] of Object.entries(h)) args.push(k, v);
-      commands.push(["hset", ...args]);
-    }
-    await flushBatch(commands);
-    written += commands.length;
   }
 
-  const elapsed = (Date.now() - t0) / 1000;
+  const left = maxId - next + 1;
   console.log(
-    `[live] DONE written=${written.toLocaleString()} skipped=${skipped.toLocaleString()} in ${elapsed.toFixed(1)}s`,
+    `[live] tail DONE written=${written.toLocaleString()} skipped=${skipped.toLocaleString()} in ${((Date.now() - t0) / 1000).toFixed(1)}s` +
+      (left > 0 ? `; budget reached, ${left.toLocaleString()} IDs left for the next run` : ""),
   );
 }
 
-// Catch unhandled rejections from the inflight pipeline promises so a single
-// transient error doesn't tear the whole process down. flushBatch already
-// retries on transients, so reaching here means the month-level await also
-// rethrew; log and continue.
-process.on("unhandledRejection", (reason) => {
-  console.error("unhandledRejection (ignoring):", String(reason).slice(0, 200));
-});
+async function refreshRecent(
+  index: ReturnType<typeof redis.search.index<typeof HN_SCHEMA>>,
+  latestId: number,
+): Promise<void> {
+  const since = new Date(Date.now() - REFRESH_WINDOW_MS).toISOString();
+  const oldest = await index.query({
+    filter: { time: { $gte: since } },
+    orderBy: { time: "ASC" },
+    limit: 1,
+  });
+  const firstId = indexedId(oldest[0] as IndexedRow | undefined);
+  if (!Number.isFinite(firstId) || firstId > latestId) {
+    console.log(`[refresh] nothing indexed since ${since} before this run; skipping`);
+    return;
+  }
+
+  console.log(
+    `[refresh] re-fetching IDs ${firstId}..${latestId} (${(latestId - firstId + 1).toLocaleString()}); budget ${REFRESH_BUDGET_MS / 60_000}min`,
+  );
+  const t0 = Date.now();
+  let written = 0;
+  let deleted = 0;
+  let last = latestId;
+
+  // Newest first: the youngest items have the stalest counts.
+  while (last >= firstId && Date.now() - t0 < REFRESH_BUDGET_MS) {
+    const first = Math.max(firstId, last - LIVE_CHUNK_IDS + 1);
+    const r = liveCommands(await fetchItems(first, last), true);
+    await flushAll(r.commands);
+    written += r.written;
+    deleted += r.deleted;
+    last = first - 1;
+  }
+
+  const left = last - firstId + 1;
+  console.log(
+    `[refresh] DONE updated=${written.toLocaleString()} deleted=${deleted.toLocaleString()} in ${((Date.now() - t0) / 1000).toFixed(1)}s` +
+      (left > 0 ? `; budget reached, ${left.toLocaleString()} oldest IDs not refreshed` : ""),
+  );
+}
 
 /**
  * Ingest one month, retrying on transient failures. The heavy Parquet read
  * (`asyncBufferFromUrl` + hyparquet range fetches) has no retry of its own, so a
- * passing HuggingFace 5xx/timeout would otherwise abort the whole month - which
- * for the unattended daily cron means a failed run and stale data. Re-reads the
- * month from scratch on each attempt (503s are rare, so simple beats clever).
- * Returns true on success, false once retries are exhausted.
+ * passing HuggingFace 5xx/timeout would otherwise abort the whole month. Re-reads
+ * the month from scratch on each attempt; `ingestMonth` only throws once its own
+ * pipelines have settled, so attempts never overlap. A missing file is not
+ * retried.
  */
 async function ingestMonthWithRetry(
   year: string,
   mm: string,
   maxTries = 4,
-): Promise<boolean> {
+): Promise<MonthResult> {
   for (let tries = 1; tries <= maxTries; tries++) {
     try {
-      await ingestMonth(year, mm);
-      return true;
+      return await ingestMonth(year, mm);
     } catch (e) {
       console.error(
         `month ${year}-${mm} attempt ${tries}/${maxTries} failed:`,
-        (e as Error).message.slice(0, 200),
+        String((e as Error)?.message ?? e).slice(0, 200),
       );
       if (tries >= maxTries) {
         console.error(`giving up on ${year}-${mm}`);
-        return false;
+        return "failed";
       }
       await new Promise((r) => setTimeout(r, 5000 * tries));
     }
   }
+  return "failed";
+}
+
+/** True for the current/previous UTC month (or later): HuggingFace may not
+ *  have published it yet, or ever again, and the Firebase tail covers it. */
+function mayBeUnpublished(year: string, mm: string): boolean {
+  const now = new Date();
+  const prev = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));
+  const prevYm = `${prev.getUTCFullYear()}-${String(prev.getUTCMonth() + 1).padStart(2, "0")}`;
+  return `${year}-${mm}` >= prevYm;
+}
+
+/** Collapse a month result into ok/not-ok, logging why a missing month is fine. */
+function monthOk(year: string, mm: string, r: MonthResult): boolean {
+  if (r === "ok") return true;
+  if (r === "missing") {
+    if (mayBeUnpublished(year, mm)) {
+      console.log(`[${year}-${mm}] not on HuggingFace; skipping (the --live Firebase tail covers recent items)`);
+      return true;
+    }
+    console.error(`[${year}-${mm}] not on HuggingFace (${parquetUrl(year, mm)})`);
+  }
   return false;
 }
 
+const USAGE = `Usage (every mode writes to the Redis in UPSTASH_REDIS_REST_URL/TOKEN):
+  bun scripts/ingest.ts <year> <month>        one month from the HuggingFace archive
+  bun scripts/ingest.ts <year> Q<1-4>         one quarter
+  bun scripts/ingest.ts <y1> <m1> <y2> <m2>   an inclusive month range
+  bun scripts/ingest.ts --live                HN Firebase tail + 3-day refresh (daily cron)`;
+
 async function main() {
   let args = process.argv.slice(2);
+
+  if (args.length === 0 || args.includes("--help") || args.includes("-h")) {
+    console.log(USAGE);
+    return;
+  }
+
+  if (args.length === 1 && args[0] === "--live") {
+    await ensureIndex();
+    await ingestLive();
+    return;
+  }
 
   // Expand "<year> Q<1-4>" into the equivalent three-month range.
   if (args.length === 2 && /^q[1-4]$/i.test(args[1])) {
@@ -489,42 +665,40 @@ async function main() {
     args = [y, String(firstMonth), y, String(firstMonth + 2)];
   }
 
-  if (args.length !== 2 && args.length !== 4) {
-    console.error(
-      "Usage: bun scripts/ingest.ts <year> <month> | <year> Q<1-4> | <y1> <m1> <y2> <m2>"
-    );
+  const valid =
+    (args.length === 2 || args.length === 4) &&
+    args.every((a, i) => (i % 2 === 0 ? /^\d{4}$/.test(a) : /^(0?[1-9]|1[0-2])$/.test(a)));
+  if (!valid) {
+    console.error(USAGE);
     process.exit(1);
   }
 
   // Make sure the search index exists before we start writing hashes.
   await ensureIndex();
 
-  // Single month (the daily cron path): exit non-zero if it ultimately fails so
-  // CI surfaces a persistent outage instead of silently leaving the data stale.
   if (args.length === 2) {
     const year = args[0];
     const month = args[1].padStart(2, "0");
-    const ok = await ingestMonthWithRetry(year, month);
-    if (!ok) process.exit(1);
-
-    // Only the current-month cron path needs the live tail. Historical manual
-    // backfills stay deterministic and use the archive alone.
-    const now = new Date();
-    const currentYear = String(now.getUTCFullYear());
-    const currentMonth = String(now.getUTCMonth() + 1).padStart(2, "0");
-    if (year === currentYear && month === currentMonth) await ingestLiveDelta();
+    if (!monthOk(year, month, await ingestMonthWithRetry(year, month))) process.exit(1);
     return;
   }
 
-  // Range: best-effort across many months - a month that exhausts its retries is
-  // logged and skipped so one bad month doesn't abort a long backfill.
+  // Range: keep going past a bad month so one failure doesn't abort a long
+  // backfill, but exit non-zero at the end if any month didn't make it.
   const [y1, m1, y2, m2] = args.map(Number);
+  const bad: string[] = [];
   for (let y = y1; y <= y2; y++) {
     const fromM = y === y1 ? m1 : 1;
     const toM = y === y2 ? m2 : 12;
     for (let m = fromM; m <= toM; m++) {
-      await ingestMonthWithRetry(String(y), String(m).padStart(2, "0"));
+      const year = String(y);
+      const mm = String(m).padStart(2, "0");
+      if (!monthOk(year, mm, await ingestMonthWithRetry(year, mm))) bad.push(`${year}-${mm}`);
     }
+  }
+  if (bad.length > 0) {
+    console.error(`FAILED months: ${bad.join(", ")}`);
+    process.exit(1);
   }
 }
 

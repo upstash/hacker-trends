@@ -1,35 +1,47 @@
 /**
- * Prime the /examples gallery cache key after a catalog change: recompute every
- * histogram and best-effort-write `examples:<CATALOG_VERSION>`, then read the key
- * back to confirm the write actually persisted (the deployed token is read-only,
- * so this must be run from an env whose token can write).
+ * Prime the /examples gallery cache key: recompute every catalog histogram and
+ * write `examples:<CATALOG_VERSION>`, then read the key back to confirm the
+ * write persisted. Runs daily from the ingest Action; the deployed app only
+ * reads the key.
  *
- *   bun --env-file=.env.local scripts/refresh-cache.ts
+ *   bun scripts/refresh-cache.ts --write
+ *
+ * Bare (or --help) prints usage and exits without touching the DB.
+ *
+ * Exit codes: 0 = a complete build was cached; 1 = creds missing or the build
+ * was incomplete (some term still failed after retries), so nothing was written
+ * and the previous value keeps serving; 2 = the write did not persist.
  */
 export {};
-import { getExamplesData } from "../src/lib/examples-data";
+import { buildExamplesCache, readExamplesCache } from "../src/lib/examples-data";
 import { CATALOG_VERSION } from "../src/lib/examples";
 
-const URL_ENDPOINT = process.env.UPSTASH_REDIS_REST_URL!;
-const TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN!;
-
 async function main() {
-  console.log(`Recomputing all histograms for catalog ${CATALOG_VERSION}...`);
-  const data = await getExamplesData({ fresh: true });
-  console.log(`computed: version=${data.version}  terms=${Object.keys(data.terms).length}  generatedAt=${data.generatedAt}`);
+  if (!process.argv.includes("--write")) {
+    console.log(
+      "Usage: bun scripts/refresh-cache.ts --write\n" +
+        `  recomputes all gallery histograms and WRITES examples:${CATALOG_VERSION} to the Redis in UPSTASH_REDIS_REST_URL/TOKEN`,
+    );
+    return;
+  }
+  if (!process.env.UPSTASH_REDIS_REST_URL || !process.env.UPSTASH_REDIS_REST_TOKEN) {
+    console.error("refresh-cache: missing UPSTASH_REDIS_REST_URL/TOKEN");
+    process.exit(1);
+  }
 
-  const r = await fetch(URL_ENDPOINT, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
-    body: JSON.stringify(["GET", `examples:${CATALOG_VERSION}`]),
-    cache: "no-store",
-  });
-  const j = (await r.json()) as { result?: string };
-  const cached = j.result ? (JSON.parse(j.result) as typeof data) : null;
-  if (cached?.version === CATALOG_VERSION) {
-    console.log(`✓ cache key examples:${CATALOG_VERSION} persisted: version=${cached.version} terms=${Object.keys(cached.terms).length} generatedAt=${cached.generatedAt}`);
+  console.log(`Recomputing all histograms for catalog ${CATALOG_VERSION}...`);
+  const { data, missing, cached } = await buildExamplesCache();
+  console.log(`computed: version=${data.version}  terms=${Object.keys(data.terms).length}  missing=${missing.length}  generatedAt=${data.generatedAt}`);
+  if (!cached) {
+    console.error(`✗ NOT cached - incomplete build. missing terms: ${missing.join(", ")}`);
+    process.exit(1);
+  }
+
+  const back = await readExamplesCache();
+  if (back?.generatedAt === data.generatedAt) {
+    console.log(`✓ cache key examples:${CATALOG_VERSION} persisted: terms=${Object.keys(back.terms).length} generatedAt=${back.generatedAt}`);
   } else {
-    console.log(`✗ cache key examples:${CATALOG_VERSION} NOT written (token is read-only?). Live compute still works; prime from a writable env.`);
+    console.error(`✗ cache key examples:${CATALOG_VERSION} did not read back after the write`);
     process.exit(2);
   }
 }

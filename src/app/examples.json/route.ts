@@ -18,9 +18,9 @@
  * key is primed out-of-band by the daily ingest Action (`refresh-cache.ts`); the
  * serverless function only ever does a single GET. On a cache miss it serves the
  * baked snapshot (with a short edge TTL so it self-heals once the Action re-primes)
- * instead of fanning out ~300 aggregates - the read-only prod token can't cache
- * the result anyway, so a computing route would re-run that fan-out on every miss
- * and hammer the Search DB (a contributor to the 2026-06-25 spike SEV-1).
+ * instead of fanning out 308 aggregates - with no single-flight, a computing
+ * route would run that fan-out once per concurrent miss and hammer the Search DB
+ * (the near-miss in the 2026-06-25 spike SEV-1 post-mortem).
  */
 
 import { readExamplesCache } from "@/lib/examples-data";

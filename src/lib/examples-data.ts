@@ -1,18 +1,15 @@
 /**
  * Server-side data layer for the /examples gallery.
  *
- * The gallery shows a date-histogram for ~150 terms. Running ~150 Upstash
- * aggregate queries on every page view would be absurd, so instead we run them
- * ONCE and cache the whole lot under a SINGLE Redis key (`examples:<version>`).
- * Every request after that is a single GET of that key: fast, and one round
- * trip instead of a hundred.
+ * The gallery shows a date-histogram for every catalog term (308 of them).
+ * Running that many Upstash aggregate queries on every page view would be
+ * absurd, so instead CI runs them ONCE and caches the whole lot under a SINGLE
+ * Redis key (`examples:<version>`). Every request after that is a single GET of
+ * that key: fast, and one round trip instead of hundreds.
  *
- * Writing the cache needs a writable token; the deployed app uses a READ-ONLY
- * Upstash token, so the SET is best-effort (it silently no-ops in prod). The key
- * is primed once from a writable environment: locally via
- * `GET /api/examples?fresh=1`, or any env whose token can write, and prod then
- * just reads it. If the key is ever missing, we still compute + return live so
- * the page never breaks; it just won't be cached until a writable env primes it.
+ * Only `scripts/refresh-cache.ts` (the daily ingest Action) builds and writes
+ * the key, via `buildExamplesCache()`. The deployed app only ever reads it
+ * (`readExamplesCache()`), so a cold key can never trigger a fan-out on Vercel.
  *
  * This module is server-only (it reads the Upstash token); import it from route
  * handlers / server components, never from a "use client" file.
@@ -41,22 +38,29 @@ export type ExamplesData = {
   terms: Record<string, MonthCount[]>;
 };
 
-/** The SDK client (env-driven). All Upstash access - the per-term aggregates AND
- *  the single cache key GET/SET - goes through it; everything is best-effort, so
- *  a missing-creds or read-only-token failure degrades to live compute, never a
- *  crash (callers treat the cache as strictly an optimization). */
+/** The SDK client (env-driven), or null without creds. All Upstash access - the
+ *  per-term aggregates AND the single cache key GET/SET - goes through it. */
 const redis = HAS_CREDS ? hnRedis() : null;
 
 /** One term's monthly histogram, via the exact same SDK aggregate the app runs,
- *  stripped to the lean {key, docCount} points the gallery plots. */
-async function fetchBuckets(term: string): Promise<MonthCount[]> {
-  if (!redis) return [];
-  try {
-    const agg = await runAggregate(redis, { q: term });
-    return agg.buckets.map((b) => ({ key: b.key, docCount: b.docCount }));
-  } catch {
-    return [];
+ *  stripped to the lean {key, docCount} points the gallery plots. Retries
+ *  transient failures; returns null once they are exhausted. Every catalog term
+ *  was probe-vetted to have data, so an empty result counts as a failure too
+ *  (caching it would freeze a false zero for the 30-day TTL). */
+async function fetchBuckets(term: string): Promise<MonthCount[] | null> {
+  if (!redis) return null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const agg = await runAggregate(redis, { q: term });
+      if (agg.buckets.length > 0) {
+        return agg.buckets.map((b) => ({ key: b.key, docCount: b.docCount }));
+      }
+    } catch {
+      // fall through to backoff + retry
+    }
+    await new Promise((r) => setTimeout(r, 250 * (attempt + 1)));
   }
+  return null;
 }
 
 async function mapLimit<T, R>(
@@ -76,15 +80,25 @@ async function mapLimit<T, R>(
   return out;
 }
 
-async function compute(): Promise<ExamplesData> {
+/** Aggregate every catalog term. Terms that still failed after retries are
+ *  omitted from `terms` and listed in `missing`. */
+async function compute(): Promise<{ data: ExamplesData; missing: string[] }> {
   const terms = allExampleTerms();
   const buckets = await mapLimit(terms, BUILD_CONCURRENCY, fetchBuckets);
   const map: Record<string, MonthCount[]> = {};
-  terms.forEach((t, i) => (map[t] = buckets[i]));
+  const missing: string[] = [];
+  terms.forEach((t, i) => {
+    const b = buckets[i];
+    if (b) map[t] = b;
+    else missing.push(t);
+  });
   return {
-    version: CATALOG_VERSION,
-    generatedAt: new Date().toISOString(),
-    terms: map,
+    data: {
+      version: CATALOG_VERSION,
+      generatedAt: new Date().toISOString(),
+      terms: map,
+    },
+    missing,
   };
 }
 
@@ -92,11 +106,10 @@ async function compute(): Promise<ExamplesData> {
  * Read-only cache lookup: returns the cached gallery data, or `null` on a miss
  * (missing / corrupt / legacy-version key, or no creds). NEVER computes.
  *
- * The serverless route (`/examples.json`) uses this so a cache miss on Vercel
- * falls back to the baked snapshot instead of fanning out ~300 aggregates -
- * which the read-only prod token can't even cache, so every miss would re-run
- * and hammer the Search DB. The cache is kept warm out-of-band by the daily
- * ingest Action (`refresh-cache.ts`), never by Vercel request traffic.
+ * This is the only access the deployed app should make. `/examples.json` serves
+ * the baked snapshot on a miss instead of fanning out ~300 aggregates. The cache
+ * is kept warm out-of-band by the daily ingest Action (`refresh-cache.ts`),
+ * never by Vercel request traffic.
  */
 export async function readExamplesCache(): Promise<ExamplesData | null> {
   if (!redis) return null;
@@ -116,30 +129,30 @@ export async function readExamplesCache(): Promise<ExamplesData | null> {
 }
 
 /**
- * The gallery's data. Reads the single cache key; on a miss (or `fresh`)
- * recomputes all histograms and best-effort-writes the cache. Always returns
- * data; the cache is an optimization, never a hard dependency.
- *
- * NOTE: this is the COMPUTE-on-miss path - use it only from writable/offline
- * contexts (the prime script, local dev). The Vercel route must use
- * `readExamplesCache()` so a miss never triggers the ~300-aggregate fan-out.
+ * Read-only: the cached gallery data, throwing on a miss so callers fall back
+ * to their own per-term path. Never computes. Prefer `readExamplesCache()`.
  */
-export async function getExamplesData(opts?: {
-  fresh?: boolean;
-}): Promise<ExamplesData> {
-  if (!opts?.fresh) {
-    const cached = await readExamplesCache();
-    if (cached) return cached;
-  }
-  const data = await compute();
-  if (redis) {
-    // Best-effort: a read-only token (prod) just rejects the write, which is
-    // fine - the key is primed once from a writable env and read everywhere.
-    try {
-      await redis.set(CACHE_KEY, JSON.stringify(data), { ex: CACHE_TTL_SECONDS });
-    } catch {
-      // ignore: cache is an optimization, never a hard dependency
-    }
-  }
-  return data;
+export async function getExamplesData(): Promise<ExamplesData> {
+  const cached = await readExamplesCache();
+  if (!cached) throw new Error(`examples cache miss (${CACHE_KEY})`);
+  return cached;
+}
+
+/**
+ * CI-ONLY builder: recompute every catalog histogram and write the cache key,
+ * but only when the build is COMPLETE (every term resolved). A partial build is
+ * returned for reporting and never persisted, so a transient gap can't freeze
+ * for the 30-day TTL and the previous complete value keeps serving. Needs a
+ * writable token; run from `scripts/refresh-cache.ts`, never from the app.
+ */
+export async function buildExamplesCache(): Promise<{
+  data: ExamplesData;
+  missing: string[];
+  cached: boolean;
+}> {
+  if (!redis) throw new Error("buildExamplesCache: no Upstash credentials");
+  const { data, missing } = await compute();
+  if (missing.length > 0) return { data, missing, cached: false };
+  await redis.set(CACHE_KEY, JSON.stringify(data), { ex: CACHE_TTL_SECONDS });
+  return { data, missing, cached: true };
 }

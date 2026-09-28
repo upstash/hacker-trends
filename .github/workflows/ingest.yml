@@ -1,20 +1,25 @@
-# Daily re-ingest of Hacker News data into Upstash Redis.
+# Daily ingest of Hacker News data into Upstash Redis.
 #
-# Why a GitHub Action and not a Vercel cron: the ingest decodes a multi-hundred-MB
-# monthly Parquet file and pipelines hundreds of thousands of HSETs — that blows
-# past Vercel serverless time/memory limits, and it needs a *writable* Upstash
-# token, which we deliberately keep OUT of the deployed app (the deploy uses a
-# read-only token). A plain runner with a full Bun runtime is the right home.
+# Why a GitHub Action and not a Vercel cron: a backfill decodes a multi-hundred-MB
+# monthly Parquet file and the daily run fetches tens of thousands of items from
+# the HN API and pipelines them as HSETs, which blows past Vercel serverless
+# time/memory limits. A plain runner with a full Bun runtime is the right home.
 #
-# The upstream dataset (HuggingFace open-index/hacker-news) is effectively live:
-# new items land every ~5 min, and at 00:00 UTC the whole current month is
-# rewritten as one authoritative Parquet. We run at 00:30 UTC so that rewrite has
-# settled, then re-ingest the current month. HSET is idempotent (it overwrites the
-# hn:<id> hash in place), so re-ingesting a month just refreshes it — no dedup.
+# Sources: the HuggingFace open-index/hacker-news monthly Parquet (stopped
+# publishing on 2026-08-23; a missing current/previous month is non-fatal), and
+# the official HN Firebase API, whose tail (`ingest.ts --live`) keeps the index
+# current on its own: it resumes after the newest indexed item in bounded chunks
+# and re-fetches the last ~3 days so scores, comment counts and deletions settle.
+# HSET is idempotent (it overwrites the hn:<id> hash in place), so overlap between
+# the two sources just refreshes items.
+#
+# The cache primes and the freshness check run even when an ingest step fails,
+# so the gallery keys (30-day TTL) never lapse. Any failure opens (or comments
+# on) a "Daily ingest failing" issue.
 #
 # Secrets required (Settings → Secrets and variables → Actions):
-#   UPSTASH_REDIS_REST_URL    — same URL as the deploy
-#   UPSTASH_REDIS_REST_TOKEN  — a WRITABLE token (NOT the deploy's read-only one)
+#   UPSTASH_REDIS_REST_URL    same URL as the deploy
+#   UPSTASH_REDIS_REST_TOKEN  a WRITABLE token
 
 name: Ingest HN data
 
@@ -24,11 +29,14 @@ on:
   workflow_dispatch: # manual run from the Actions tab / `gh workflow run`
     inputs:
       year:
-        description: "Year to ingest (default: current UTC year)"
+        description: "Year to ingest from HuggingFace (default: current UTC year)"
         required: false
       month:
-        description: "Month to ingest, 1-12 (default: current UTC month)"
+        description: "Month to ingest from HuggingFace, 1-12 (default: current UTC month)"
         required: false
+
+permissions:
+  contents: read
 
 # Never let two ingests overlap (a slow run + the next day's cron).
 concurrency:
@@ -39,33 +47,39 @@ jobs:
   ingest:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    env:
-      UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
-      UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+    permissions:
+      contents: read
+      issues: write # failure alert
     steps:
       - uses: actions/checkout@v5
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.3.14
 
       - run: bun install --frozen-lockfile
 
-      - name: Refresh current month (or the month given on a manual run)
+      - name: Refresh current month from HuggingFace (or the month given on a manual run)
+        env:
+          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+          YEAR: ${{ inputs.year }}
+          MONTH: ${{ inputs.month }}
         run: |
           set -euo pipefail
-          YEAR="${{ inputs.year }}"
-          MONTH="${{ inputs.month }}"
           [ -z "$YEAR" ]  && YEAR="$(date -u +%Y)"
           [ -z "$MONTH" ] && MONTH="$(date -u +%m)"
           echo "Ingesting $YEAR-$MONTH"
           bun scripts/ingest.ts "$YEAR" "$MONTH"
 
       - name: Finalize the previous month at the month boundary
-        # On the 1st/2nd, last month just got its final authoritative rewrite at
-        # 00:00 UTC; re-ingest it once so its last day isn't permanently missed.
-        # Skipped on manual runs (you already picked a month above).
-        if: ${{ github.event_name == 'schedule' }}
+        # On the 1st/2nd, last month got its final authoritative rewrite at
+        # 00:00 UTC (while HuggingFace still publishes); re-ingest it once so its
+        # last day isn't permanently missed. Skipped on manual runs.
+        if: ${{ !cancelled() && github.event_name == 'schedule' }}
+        env:
+          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
         run: |
           set -euo pipefail
           DAY="$(date -u +%d)"
@@ -78,20 +92,31 @@ jobs:
             echo "Not a month boundary (day $DAY); nothing to finalize."
           fi
 
+      - name: Fill the live tail and refresh recent items from the HN API
+        # Runs even if the archive steps failed: this alone keeps the index fresh.
+        # Time-budgeted (~17 min max) so a large backlog drains over several runs.
+        if: ${{ !cancelled() }}
+        env:
+          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+        run: bun scripts/ingest.ts --live
+
       - name: Refresh the dedicated hnjobs postings index (current month)
-        # Sibling step: after the shared `hn` index has the current month, rebuild
-        # the dedicated `hnjobs` postings index for that same month so the
+        # After the shared `hn` index has this month's items, rebuild the
+        # dedicated `hnjobs` postings index for the same month so the
         # drill-down's reply counts stay current (the open "Who is hiring?" thread
         # keeps gaining postings + replies all month). ingest-jobs.ts reads the
-        # just-refreshed postings out of `hn`, computes each posting's
-        # direct-children reply count in one batched pass, and HSETs them into
-        # `hnjob:*` (idempotent). It needs the same WRITABLE token as the steps
-        # above. A single recent month is cheap (a few seconds); the full history
-        # only changes when a whole past month is re-finalized.
+        # postings out of `hn`, computes each posting's direct-children reply
+        # count in one batched pass, and HSETs them into `hnjob:*` (idempotent).
+        # Independent of the archive steps: `hn` is fed by the live tail too.
+        if: ${{ !cancelled() }}
+        env:
+          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+          YEAR: ${{ inputs.year }}
+          MONTH: ${{ inputs.month }}
         run: |
           set -euo pipefail
-          YEAR="${{ inputs.year }}"
-          MONTH="${{ inputs.month }}"
           [ -z "$YEAR" ]  && YEAR="$(date -u +%Y)"
           [ -z "$MONTH" ] && MONTH="$(date -u +%m)"
           # ingest-jobs.ts addresses months as zero-padded "YYYY-MM".
@@ -100,10 +125,13 @@ jobs:
           bun scripts/ingest-jobs.ts "$YEAR-$MONTH"
 
       - name: Finalize hnjobs for the previous month at the month boundary
-        # Same month-boundary logic as the `hn` finalize above: once last month is
-        # closed out in `hn`, rebuild its `hnjobs` slice once so its final replies
-        # are captured. Schedule-only.
-        if: ${{ github.event_name == 'schedule' }}
+        # Same month-boundary logic as the `hn` finalize above: rebuild last
+        # month's `hnjobs` slice once so its final replies are captured.
+        # Schedule-only.
+        if: ${{ !cancelled() && github.event_name == 'schedule' }}
+        env:
+          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
         run: |
           set -euo pipefail
           DAY="$(date -u +%d)"
@@ -116,23 +144,66 @@ jobs:
           fi
 
       - name: Prime the Who-is-hiring gallery cache
-        # The deployed app NEVER computes the jobs gallery (read-only token, no
-        # ~120-aggregate fan-out on Vercel). It only reads the Redis
+        # The deployed app NEVER computes the jobs gallery (no ~120-aggregate
+        # fan-out on Vercel). It only reads the Redis
         # `jobs-gallery-wire:<version>` key, which this step rebuilds against the
-        # just-refreshed index using the WRITABLE token. Runs last so the
-        # histograms reflect this run's fresh data. Fails the job if the build
-        # came back incomplete, so a degraded gallery doesn't pass silently.
+        # just-refreshed index. Runs even if an ingest step failed so the key
+        # (30-day TTL) never lapses. Fails the job if the build came back
+        # incomplete, so a degraded gallery doesn't pass silently.
+        if: ${{ !cancelled() }}
+        env:
+          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
         run: bun scripts/prime-jobs-gallery.ts
 
       - name: Prime the examples gallery cache
         # Twin of the step above for the main landing-page gallery. The deployed
-        # app NEVER computes this (read-only token, no ~300-aggregate fan-out on
-        # Vercel) - it only reads the Redis `examples:<CATALOG_VERSION>` key, which
-        # this step rebuilds against the just-refreshed index using the WRITABLE
-        # token. Without this, the key only ever got written by an accidental
-        # writable cache-miss and lapsed on its 30-day TTL, leaving prod to serve
-        # stale/snapshot data or (pre-fix) re-fan-out on every miss.
-        # refresh-cache.ts reads the key back and exits non-zero if the write
-        # didn't persist, so a degraded gallery fails the job instead of passing
-        # silently.
-        run: bun scripts/refresh-cache.ts
+        # app NEVER computes this (no 308-aggregate fan-out on Vercel); it only
+        # reads the Redis `examples:<CATALOG_VERSION>` key, which this step
+        # rebuilds. refresh-cache.ts only writes a complete build (a partial one
+        # keeps the previous value) and exits non-zero if the build was
+        # incomplete or the write didn't read back.
+        if: ${{ !cancelled() }}
+        env:
+          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+        run: bun scripts/refresh-cache.ts --write
+
+      - name: Check data freshness
+        # Read-only. Fails if the newest indexed item is older than 36h, so a
+        # stalled pipeline alerts even when every step above "succeeded".
+        if: ${{ !cancelled() }}
+        env:
+          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+        run: bun scripts/check-freshness.ts 36
+
+      - name: Open or update the failure issue
+        # cancelled() also catches the 30-min timeout.
+        if: ${{ failure() || cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TITLE="Daily ingest failing"
+          RUN_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          N="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "in:title \"$TITLE\"" --json number,title --jq "map(select(.title == \"$TITLE\")) | .[0].number // empty")"
+          if [ -n "$N" ]; then
+            gh issue comment "$N" --repo "$GITHUB_REPOSITORY" --body "Failed again: $RUN_URL"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$TITLE" \
+              --body "The daily ingest run failed: $RUN_URL. Later failures are added as comments; close this once a run passes."
+          fi
+
+  keepalive:
+    # GitHub disables scheduled workflows after 60 days without repo activity.
+    # Re-enabling the (already enabled) workflow via the API resets that clock.
+    if: ${{ github.event_name == 'schedule' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/$GITHUB_REPOSITORY/actions/workflows/ingest.yml/enable"

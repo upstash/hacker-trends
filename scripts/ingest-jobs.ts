@@ -34,16 +34,14 @@
  * Idempotent: HSET overwrites `hnjob:<id>` in place, so re-running a month just
  * refreshes its postings + reply counts. No dedup needed.
  *
- * SAFE BY DEFAULT: with no args it validates ONE recent month (a small slice) so
- * the build loop can exercise it without a ~93k backfill. To run the full
- * backfill (DO NOT do this unattended - it walks every monthly thread):
+ * Every mode WRITES to the Redis in UPSTASH_REDIS_REST_URL/TOKEN, so a target
+ * is required; run bare (or with --help) for usage, which never touches the DB.
  *
- *   bun scripts/ingest-jobs.ts --all
- *
- * Other usage:
- *   bun scripts/ingest-jobs.ts                 # validate the latest month only
  *   bun scripts/ingest-jobs.ts 2026-06         # one specific month
  *   bun scripts/ingest-jobs.ts 2026-01 2026-06 # an inclusive month range
+ *   bun scripts/ingest-jobs.ts --all           # full backfill (heavy; never unattended)
+ *
+ * Exits non-zero if any month still fails after its retries.
  *
  * Index lifecycle flags - for a heavy backfill, dropping the index first and
  * recreating it only AFTER all postings are upserted is both faster (no live
@@ -60,9 +58,6 @@ import { WHO_IS_HIRING_THREADS, type HiringThread } from "../src/lib/who-is-hiri
 
 const REDIS_URL = process.env.UPSTASH_REDIS_REST_URL!;
 const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN!;
-if (!REDIS_URL || !REDIS_TOKEN) {
-  throw new Error("Set UPSTASH_REDIS_REST_URL + UPSTASH_REDIS_REST_TOKEN (.env.local)");
-}
 
 const redis = new Redis({ url: REDIS_URL, token: REDIS_TOKEN });
 
@@ -370,10 +365,44 @@ async function discoverHiringThread(month: string): Promise<HiringThread | null>
   return thread;
 }
 
+const USAGE = `Usage (every mode writes to the Redis in UPSTASH_REDIS_REST_URL/TOKEN):
+  bun scripts/ingest-jobs.ts <YYYY-MM>             one month
+  bun scripts/ingest-jobs.ts <YYYY-MM> <YYYY-MM>   an inclusive month range
+  bun scripts/ingest-jobs.ts --all                 every month (heavy)
+  add --no-index to upsert without (re)creating the index
+  bun scripts/ingest-jobs.ts --drop-index          drop the index (keeps hnjob:* hashes)
+  bun scripts/ingest-jobs.ts --create-index        create the index over existing hashes`;
+
+const KNOWN_FLAGS = new Set(["--all", "--no-index", "--drop-index", "--create-index"]);
+
 async function main() {
   const args = process.argv.slice(2);
   const flags = new Set(args.filter((a) => a.startsWith("--")));
   const positional = args.filter((a) => !a.startsWith("--"));
+
+  if (args.length === 0 || flags.has("--help") || args.includes("-h")) {
+    console.log(USAGE);
+    return;
+  }
+  const hasTarget =
+    flags.has("--all") ||
+    flags.has("--drop-index") ||
+    flags.has("--create-index") ||
+    positional.length === 1 ||
+    positional.length === 2;
+  if (
+    !hasTarget ||
+    positional.length > 2 ||
+    ![...flags].every((f) => KNOWN_FLAGS.has(f)) ||
+    !positional.every((m) => /^\d{4}-(0[1-9]|1[0-2])$/.test(m))
+  ) {
+    console.error(USAGE);
+    process.exit(1);
+  }
+  if (!REDIS_URL || !REDIS_TOKEN) {
+    console.error("Set UPSTASH_REDIS_REST_URL + UPSTASH_REDIS_REST_TOKEN");
+    process.exit(1);
+  }
 
   // Standalone index-lifecycle ops (ignore month args, then exit).
   if (flags.has("--drop-index")) {
@@ -410,17 +439,13 @@ async function main() {
   } else if (positional.length === 2) {
     targets = threadsInRange(positional[0], positional[1]);
     mode = `range ${positional[0]}..${positional[1]}`;
-  } else if (positional.length === 1) {
+  } else {
     targets = WHO_IS_HIRING_THREADS.filter((t) => t.month === positional[0]);
     if (targets.length === 0) {
       const discovered = await discoverHiringThread(positional[0]);
       if (discovered) targets = [discovered];
     }
     mode = `month ${positional[0]}`;
-  } else {
-    // Default: validate the latest month only (the safe slice).
-    targets = LATEST ? [LATEST] : [];
-    mode = `validate latest month (${LATEST?.month})`;
   }
 
   if (targets.length === 0) {
@@ -440,6 +465,7 @@ async function main() {
   console.log(`ingest-jobs: ${mode} -> ${targets.length} thread(s)`);
   let totalPostings = 0;
   let totalWithReplies = 0;
+  const failed: string[] = [];
   for (const thread of targets) {
     // Per-month retry: a heavy full backfill takes ~90 min and the connection
     // throws the occasional transient ECONNRESET / "unable to connect" mid-month.
@@ -460,6 +486,7 @@ async function main() {
     }
     if (!r) {
       console.error(`[${thread.month}] FAILED after retries - skipping this month`);
+      failed.push(thread.month);
       continue;
     }
     totalPostings += r.postings;
@@ -469,10 +496,9 @@ async function main() {
   console.log(
     `DONE: wrote ${totalPostings} postings across ${targets.length} month(s); ${totalWithReplies} had >=1 direct reply.`,
   );
-  if (positional.length === 0 && !flags.has("--all")) {
-    console.log(
-      `\nThis was the SAFE single-month validation. To backfill everything (heavy):\n  bun scripts/ingest-jobs.ts --all\nor a range, e.g.:\n  bun scripts/ingest-jobs.ts 2025-01 2026-06`,
-    );
+  if (failed.length > 0) {
+    console.error(`FAILED months: ${failed.join(", ")}`);
+    process.exit(1);
   }
 }
 

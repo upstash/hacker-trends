@@ -1,6 +1,6 @@
 /**
  * Dump real shock-value metrics for every COMPARISON, from the cached examples
- * series (single GET, read-only token). For each term we compute volume, the
+ * series (single GET, read-only). For each term we compute volume, the
  * single tallest month, "tower ratio" (peak / median of non-zero months), and
  * for each comparison we detect lead-changes (crossovers) between terms over
  * time. Output is compact JSON, sorted by a rough shock score, so the launch
@@ -9,7 +9,7 @@
  *   bun --env-file=.env.local scripts/dump-comparison-shock.ts > /tmp/shock.json
  */
 export {};
-import { getExamplesData, type MonthCount } from "../src/lib/examples-data";
+import { readExamplesCache, type MonthCount } from "../src/lib/examples-data";
 import { COMPARISONS } from "../src/lib/examples";
 
 function ym(key: number): string {
@@ -67,7 +67,8 @@ function leadChanges(seriesByTerm: Record<string, MonthCount[]>, terms: string[]
 }
 
 async function main() {
-  const data = await getExamplesData(); // cached single GET
+  const data = await readExamplesCache(); // cached single GET, never computes
+  if (!data) throw new Error("examples cache miss; prime it with refresh-cache.ts --write");
   const rows = COMPARISONS.map((c) => {
     const per: Record<string, ReturnType<typeof termMetrics>> = {};
     const seriesByTerm: Record<string, MonthCount[]> = {};
@@ -102,7 +103,7 @@ async function main() {
   });
   const ranked = rows
     .filter((r) => !("missing" in r))
-    .sort((a: any, b: any) => b.shock - a.shock);
+    .sort((a, b) => (b.shock ?? 0) - (a.shock ?? 0));
   process.stdout.write(JSON.stringify({ count: ranked.length, ranked }, null, 2));
   process.stderr.write(`\n${rows.filter((r) => "missing" in r).length} missing\n`);
 }

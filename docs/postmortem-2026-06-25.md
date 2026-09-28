@@ -268,6 +268,18 @@ Recommended next (priority order):
 - [ ] **Cap/cache the per-page `/api/hn` fan-out** (batch the chart series into one cached call).
 - [ ] CI must re-prime `examples:<CATALOG_VERSION>` on every version bump (and verify in prod).
 
+Update 2026-09-29 (branch `launch-fixes-X-ingest`). Note the deployed token is writable now (rate limiter,
+`hncache`), so any app-side compute path would also write its result:
+- [x] **No cold-key fan-out for `/examples.json`:** the app never computes the gallery. `/api/examples`
+  (public `?fresh=1` 308-aggregate fan-out that could overwrite the key) is deleted, and `getExamplesData()`
+  is now a read-only cache lookup (it was compute-and-write on a miss for the `/trends` landing pages).
+- [x] **Guaranteed prime (partly):** the daily Action primes both gallery keys even when an ingest step
+  fails, writes only complete builds (failed terms retried; a partial build keeps the previous value) and
+  verifies the read-back. A catalog version bump is primed by the next daily run or a manual dispatch,
+  not on push.
+- [x] **Alerting (ingest side only):** a failed or stale run (newest item older than 36h) opens or
+  comments on a "Daily ingest failing" GitHub issue. 5xx-rate / Upstash throughput alerting is still open.
+
 ---
 
 ## 10. Method / reproduce

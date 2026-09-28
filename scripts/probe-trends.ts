@@ -21,6 +21,7 @@
  *   echo "term a\nterm b" | bun --env-file=.env.local scripts/probe-trends.ts -
  */
 export {};
+import { readFileSync } from "node:fs";
 
 const REST_URL = process.env.UPSTASH_REDIS_REST_URL!;
 const TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN!;
@@ -160,7 +161,7 @@ function readQueries(): string[] {
   const args = process.argv.slice(2);
   if (args.length === 1 && args[0] === "-") {
     // read newline-separated terms from stdin
-    const txt = require("fs").readFileSync(0, "utf8") as string;
+    const txt = readFileSync(0, "utf8");
     return txt.split("\n").map((l) => l.trim()).filter(Boolean);
   }
   if (args.length > 0) return args;
