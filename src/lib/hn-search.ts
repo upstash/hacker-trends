@@ -18,6 +18,7 @@ import {
   type SearchArgsOpts,
   type SearchResponse,
 } from "./hn-query";
+import { QUERYING_DISABLED_LABEL } from "./maintenance";
 
 export type {
   HnDoc,
@@ -45,10 +46,60 @@ async function callEdge<T>(params: Params, signal?: AbortSignal): Promise<T> {
     cache: "default",
     signal,
   });
-  if (!r.ok) throw new Error(`/api/hn -> ${r.status} ${await r.text()}`);
-  const j = (await r.json()) as { result?: T; error?: string };
-  if (j.error) throw new Error(j.error);
+  if (!r.ok) {
+    const body = (await r.json().catch(() => null)) as
+      | { error?: string; code?: ApiErrorCode }
+      | null;
+    throw new ApiError(r.status, body?.code ?? codeForStatus(r.status), body?.error ?? r.statusText);
+  }
+  const j = (await r.json()) as { result?: T; error?: string; code?: ApiErrorCode };
+  if (j.error) throw new ApiError(r.status, j.code ?? "upstream", j.error);
   return j.result as T;
+}
+
+/* ---------- errors --------------------------------------------------- */
+
+/** Machine-readable reason in the `/api/hn` error envelope `{ error, code }`. */
+export type ApiErrorCode =
+  | "rate_limited" // per-IP limit (429)
+  | "busy" // global miss budget exhausted, DB is saturated (503)
+  | "disabled" // kill switch on (503)
+  | "bad_request" // 400
+  | "upstream"; // Upstash failed (502) or anything else
+
+function codeForStatus(status: number): ApiErrorCode {
+  if (status === 429) return "rate_limited";
+  if (status === 503) return "busy";
+  if (status === 400) return "bad_request";
+  return "upstream";
+}
+
+export class ApiError extends Error {
+  constructor(
+    public status: number,
+    public code: ApiErrorCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
+/** Short user-facing copy for a failed `/api/hn` call. Never shows raw bodies. */
+export function friendlyError(e: unknown): string {
+  const code = e instanceof ApiError ? e.code : "upstream";
+  switch (code) {
+    case "rate_limited":
+      return "Too many searches at once. Give it a few seconds.";
+    case "busy":
+      return "Search is busy right now. Try again in a moment.";
+    case "disabled":
+      return QUERYING_DISABLED_LABEL;
+    case "bad_request":
+      return "That search couldn't be run.";
+    default:
+      return "Search failed. Try again.";
+  }
 }
 
 /* ---------- search --------------------------------------------------- */
