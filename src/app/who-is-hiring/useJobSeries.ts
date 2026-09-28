@@ -69,6 +69,21 @@ async function aggregateSeries(
   return sumByMonth(perPart);
 }
 
+/** Months per series label from successful aggregates this session, so adding
+ *  or editing one chip only queries that chip (and a failure elsewhere can't
+ *  blank bands that already loaded). Failures are never cached. */
+const seriesCache = new Map<string, Map<string, number>>();
+const SERIES_CACHE_MAX = 64;
+
+async function cachedSeries(label: string, signal: AbortSignal): Promise<Map<string, number>> {
+  const hit = seriesCache.get(label);
+  if (hit) return hit;
+  const byMonth = await aggregateSeries(label, signal);
+  if (seriesCache.size >= SERIES_CACHE_MAX) seriesCache.clear();
+  seriesCache.set(label, byMonth);
+  return byMonth;
+}
+
 type Loaded = {
   key: string;
   /** the retry attempt it answers (a retry invalidates the failed result). */
@@ -118,13 +133,16 @@ export function useJobSeries(terms: string[], initial?: SeriesData[]): JobSeries
     if (QUERYING_DISABLED) return; // no live aggregate while the DB is down
     if (cleaned.length === 0) return;
     if (attempt === 0 && seed?.key === key) return;
+    // The server-built bands count as loaded: editing one chip on a landing
+    // page shouldn't re-query the page's own terms.
+    for (const s of seed?.series ?? []) if (!seriesCache.has(s.label)) seriesCache.set(s.label, s.byMonth);
     const ctrl = new AbortController();
     // Start on the next tick: the hub's first (hydration) render may be
     // replaced at once by its URL-seeded terms, and this cleanup then cancels
     // the default comparison before any request goes out.
     const t = setTimeout(async () => {
       const settled = await Promise.allSettled(
-        cleaned.map((label) => aggregateSeries(label, ctrl.signal)),
+        cleaned.map((label) => cachedSeries(label, ctrl.signal)),
       );
       if (ctrl.signal.aborted) return;
       const reasons = settled
@@ -171,7 +189,7 @@ export function useJobSeries(terms: string[], initial?: SeriesData[]): JobSeries
   // dataset fetched at all.
   const offline = QUERYING_DISABLED || !!current?.disabled;
   const dataset = useJobsGallery(offline);
-  const cachedSeries = useMemo(() => {
+  const gallerySeries = useMemo(() => {
     if (!offline || !dataset.ready) return null;
     return cleaned.map((label, i) => {
       const parts = parseParts(label);
@@ -199,14 +217,14 @@ export function useJobSeries(terms: string[], initial?: SeriesData[]): JobSeries
   // While a new comparison loads, keep every band we already know (from the
   // previous result) and zero-fill the new ones, so the chart doesn't blank.
   const safe = useMemo(() => {
-    if (offline) return cachedSeries ?? cleaned.map((t, i) => emptySeries(t, i));
+    if (offline) return gallerySeries ?? cleaned.map((t, i) => emptySeries(t, i));
     if (current) return current.series;
     const prev = [...(loaded?.series ?? []), ...(seed?.series ?? [])];
     return cleaned.map((label, i) => {
       const hit = prev.find((s) => s.label === label);
       return hit ? { ...hit, color: colorAt(i) } : emptySeries(label, i);
     });
-  }, [offline, cachedSeries, current, loaded, seed, cleaned]);
+  }, [offline, gallerySeries, current, loaded, seed, cleaned]);
 
   return { series: safe, loading, error, retry };
 }
