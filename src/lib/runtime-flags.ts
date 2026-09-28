@@ -1,16 +1,18 @@
 /**
  * Server-only runtime kill switch. Flip it without a deploy (a deploy purges the
- * CDN, which made the 2026-06-25 incident worse):
+ * CDN, which made the 2026-06-25 incident worse). The key lives on the cache DB
+ * (`CACHE_REDIS_REST_*` if set, else the main Search DB):
  *
- *   upstash redis exec <db> SET flags:querying-disabled 1   # disable live queries
- *   upstash redis exec <db> DEL flags:querying-disabled     # re-enable
+ *   upstash redis exec --db-url $URL --db-token $TOKEN SET flags:querying-disabled 1   # disable
+ *   upstash redis exec --db-url $URL --db-token $TOKEN DEL flags:querying-disabled     # re-enable
  *
  * Read at most once per QUERY_FLAG_TTL_MS per warm instance. The build-time
  * `QUERYING_DISABLED` const in maintenance.ts still forces it on everywhere.
- * Do not import from client components.
+ * The `server-only` import makes a client-component import a build error.
  */
 
-import { hnRedis } from "./hn-index";
+import "server-only";
+import { cacheRedis } from "./hn-index";
 import { QUERYING_DISABLED } from "./maintenance";
 
 export const QUERYING_DISABLED_FLAG_KEY = "flags:querying-disabled";
@@ -23,7 +25,8 @@ export async function isQueryingDisabled(): Promise<boolean> {
   if (cached && Date.now() - cached.at < QUERY_FLAG_TTL_MS) return cached.value;
   let value = cached?.value ?? false;
   try {
-    value = (await hnRedis().get(QUERYING_DISABLED_FLAG_KEY)) != null;
+    const redis = cacheRedis();
+    if (redis) value = (await redis.get(QUERYING_DISABLED_FLAG_KEY)) != null;
   } catch {
     // Redis blip: keep the last known value rather than flapping.
   }

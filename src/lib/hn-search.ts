@@ -1,13 +1,11 @@
 /**
  * Browser client for the app's search/aggregate calls.
  *
- * Requests go browser -> `/api/hn` (a Vercel Edge function) -> Upstash, instead
- * of browser -> Upstash directly. The Edge hop ties the old direct path on
- * latency (the ~600ms query dominates either way) while keeping the Upstash
- * token server-side. The edge route now runs the query through the
- * `@upstash/redis` search SDK and returns the ALREADY-PARSED payload, so the
- * client just reads `result` - no raw REST parsing here anymore. The query
- * shape lives in `hn-query.ts`; the wire contract is just `?op=&q=&sort=&…`.
+ * Requests go browser -> `/api/hn` (a Node serverless function) -> Upstash, so
+ * the Upstash token stays server-side and results are cached in one place. The
+ * route runs the query through the `@upstash/redis` search SDK and returns the
+ * ALREADY-PARSED payload, so the client just reads `result`. The query shape
+ * lives in `hn-query.ts`; the wire contract is just `?op=&q=&sort=&…`.
  */
 
 import {
@@ -17,6 +15,7 @@ import {
   type HnDoc,
   type SearchArgsOpts,
   type SearchResponse,
+  normalizeQuery,
 } from "./hn-query";
 import { QUERYING_DISABLED_LABEL } from "./maintenance";
 
@@ -36,8 +35,9 @@ async function callEdge<T>(params: Params, signal?: AbortSignal): Promise<T> {
   for (const [k, v] of Object.entries(params)) {
     if (v !== undefined && v !== "") sp.set(k, String(v));
   }
-  // A given `?op=&q=&sort=&from=&to=&index=…` URL is fully deterministic and the
-  // edge route returns it with a real `Cache-Control` (max-age for the browser,
+  // A given `?op=&q=&sort=&from=&to=&index=…` URL is fully deterministic (q is
+  // normalized by the callers below, so `RUST` and `rust` share one URL) and the
+  // route returns it with a real `Cache-Control` (max-age for the browser,
   // s-maxage for the CDN). So DON'T force `no-store`: use the default HTTP cache
   // so re-hovering / re-clicking the SAME (term, month) is served straight from
   // the browser cache - no network, no ~200ms Upstash round-trip - instead of
@@ -107,11 +107,23 @@ export function friendlyError(e: unknown): string {
 export async function searchPosts(
   opts: SearchArgsOpts & { signal?: AbortSignal },
 ): Promise<SearchResponse> {
-  const { signal, q, sort, limit = 30, from, to, by, type, scope, index } = opts;
+  const { signal, q, sort, limit = 30, offset, from, to, by, type, scope, index } = opts;
   const t0 = performance.now();
-  // The edge route returns the already-mapped HnDoc[].
+  // The route returns the already-mapped HnDoc[] (comments carry `thread`).
   const docs = await callEdge<HnDoc[]>(
-    { op: "search", q, sort, limit, from, to, by, type, scope, index },
+    {
+      op: "search",
+      q: normalizeQuery(q),
+      sort,
+      limit,
+      offset: offset || undefined,
+      from,
+      to,
+      by,
+      type,
+      scope,
+      index,
+    },
     signal,
   );
   const latencyMs = performance.now() - t0;
@@ -129,9 +141,9 @@ export async function aggregate(
 ): Promise<AggResponse> {
   const { signal, q, from, to, scope, index } = opts;
   const t0 = performance.now();
-  // The edge route returns the already-mapped Aggregations.
+  // The route returns the already-mapped Aggregations.
   const agg = await callEdge<Aggregations>(
-    { op: "aggregate", q, from, to, scope, index },
+    { op: "aggregate", q: normalizeQuery(q), from, to, scope, index },
     signal,
   );
   const latencyMs = performance.now() - t0;

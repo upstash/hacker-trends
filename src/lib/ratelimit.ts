@@ -1,68 +1,75 @@
 /**
- * IP-based rate limiting for the public edge API, via `@upstash/ratelimit`.
+ * Load shedding for `/api/hn`, via `@upstash/ratelimit`. Two layers, both
+ * charged only when a request is about to do real work (a result-cache miss):
  *
- * CREDENTIAL: this runs against the SAME Upstash database as the search index,
- * using the app's main `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN`.
- * The limiter namespaces its keys under the `ratelimit:` prefix so they never
- * collide with the search index. NOTE: rate limiting WRITES counter keys, so the
- * deployed `UPSTASH_REDIS_REST_TOKEN` must have write access to that DB. If the
- * token is read-only the limit check throws and we fail open (see below) - i.e.
- * a read-only token degrades to "no rate limiting", never to "the API is down".
+ *  - per-IP (`rateLimitRequest`): stops one client hammering the uncached path.
+ *    Searches and the cheap `op=thread` lookups use separate buckets.
+ *  - GLOBAL (`globalSearchBudget`): a shared budget of live Upstash Search calls
+ *    across all IPs and instances. The Search DB collapses past ~10 q/s (see
+ *    docs/postmortem-2026-06-25.md: pushed harder it completes FEWER queries),
+ *    so over budget we fail fast with 503 `busy` instead of queueing.
  *
- * Runtime: `@upstash/ratelimit` + `@upstash/redis` are fetch-based and
- * edge-compatible, so this module is safe to import from the Vercel Edge route.
- * The sliding-window algorithm is one Redis round-trip per request; the
- * module-level ephemeral cache lets an already-blocked IP be rejected in-memory
- * (within a single warm edge instance) without even that round-trip.
+ * Env (read at cold start):
+ *   RATELIMIT_REQUESTS / RATELIMIT_WINDOW                per-IP searches (30 / "10 s")
+ *   RATELIMIT_THREAD_REQUESTS                            per-IP thread lookups (120 / same window)
+ *   RATELIMIT_GLOBAL_REQUESTS / RATELIMIT_GLOBAL_WINDOW  global live searches (6 / "1 s")
+ *   RATELIMIT_ANALYTICS=1                                populate the Upstash dashboard
+ *
+ * Keep the global budget well under the Search DB's measured ceiling; raise it
+ * only after the DB is scaled. Counters live on `cacheRedis()` (the optional
+ * CACHE_REDIS_REST_* DB, else the main one) under `ratelimit*` prefixes, so the
+ * token must be writable. The per-IP checks fail OPEN: an unconfigured or
+ * erroring Redis means "allow", never "the API is down". The global budget
+ * falls back to the same limit counted per instance, so a Redis fault (likely
+ * exactly when the shared DB is saturated) can't lift the cap entirely.
  */
 
 import { Ratelimit } from "@upstash/ratelimit";
-import { Redis } from "@upstash/redis";
+import { cacheRedis } from "./hn-index";
 
-// Allow this many requests per IP per window before returning 429. The public
-// app is read-mostly and CDN-cached, so a human browsing never comes close;
-// this is a guard against a single IP hammering the (uncached) edge->Upstash
-// path. Tune via env without a redeploy.
+type Duration = Parameters<typeof Ratelimit.slidingWindow>[1];
+
+const WINDOW = (process.env.RATELIMIT_WINDOW ?? "10 s") as Duration;
 const LIMIT = Number(process.env.RATELIMIT_REQUESTS ?? 30);
-const WINDOW = (process.env.RATELIMIT_WINDOW ?? "10 s") as Parameters<
-  typeof Ratelimit.slidingWindow
->[1];
+const THREAD_LIMIT = Number(process.env.RATELIMIT_THREAD_REQUESTS ?? 120);
+const GLOBAL_LIMIT = Number(process.env.RATELIMIT_GLOBAL_REQUESTS ?? 6);
+const GLOBAL_WINDOW = (process.env.RATELIMIT_GLOBAL_WINDOW ?? "1 s") as Duration;
 
-// The ephemeral cache MUST be module-level (i.e. outside the request handler)
-// so it survives across requests on a warm edge instance. Once an IP is blocked
-// the limiter can short-circuit it from this Map without hitting Redis.
-const ephemeralCache = new Map<string, number>();
+export type LimitKind = "search" | "thread";
 
-// Built once per warm instance, lazily, and only if the dedicated writable
-// credentials are present. `null` means "rate limiting disabled" -> allow all.
-let limiter: Ratelimit | null | undefined;
+// Built once per warm instance, lazily. `null` means "limiting disabled".
+let limiters:
+  | { search: Ratelimit; thread: Ratelimit; global: Ratelimit }
+  | null
+  | undefined;
 
-function getLimiter(): Ratelimit | null {
-  if (limiter !== undefined) return limiter;
-
-  const url = process.env.UPSTASH_REDIS_REST_URL;
-  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
-  if (!url || !token) {
-    // No Upstash credential available: disable (fail-open). Logged once per cold
-    // start so it's visible in deploy logs without spamming every request.
-    console.warn(
-      "[ratelimit] UPSTASH_REDIS_REST_URL/TOKEN not set - rate limiting disabled",
-    );
-    limiter = null;
-    return limiter;
+function getLimiters() {
+  if (limiters !== undefined) return limiters;
+  const redis = cacheRedis();
+  if (!redis) {
+    // Logged once per cold start so it's visible without spamming every request.
+    console.warn("[ratelimit] no Redis credentials - rate limiting disabled");
+    limiters = null;
+    return limiters;
   }
-
-  limiter = new Ratelimit({
-    redis: new Redis({ url, token }),
-    limiter: Ratelimit.slidingWindow(LIMIT, WINDOW),
-    ephemeralCache,
-    prefix: "ratelimit",
-    // Analytics writes extra keys per request; off by default to keep the limiter
-    // to a single round-trip. Flip RATELIMIT_ANALYTICS=1 to populate the Upstash
-    // Ratelimit dashboard.
-    analytics: process.env.RATELIMIT_ANALYTICS === "1",
-  });
-  return limiter;
+  // Each ephemeral cache MUST be module-level so it survives across requests on
+  // a warm instance: once an IP (or the global budget) is blocked, the limiter
+  // rejects from this Map until the window resets, without a Redis round-trip.
+  const make = (limit: number, window: Duration, prefix: string) =>
+    new Ratelimit({
+      redis,
+      limiter: Ratelimit.slidingWindow(limit, window),
+      ephemeralCache: new Map<string, number>(),
+      prefix,
+      // Analytics writes extra keys per request; off by default.
+      analytics: process.env.RATELIMIT_ANALYTICS === "1",
+    });
+  limiters = {
+    search: make(LIMIT, WINDOW, "ratelimit"),
+    thread: make(THREAD_LIMIT, WINDOW, "ratelimit:thread"),
+    global: make(GLOBAL_LIMIT, GLOBAL_WINDOW, "ratelimit:global"),
+  };
+  return limiters;
 }
 
 /**
@@ -84,39 +91,86 @@ export function getClientIp(req: Request): string {
 export type RateLimitResult = {
   /** Whether the request is allowed through. True when limiting is disabled. */
   success: boolean;
-  /** Standard rate-limit headers to attach to the response (set even on allow). */
+  /** Standard rate-limit headers. Attach them to the 429 only: a cached 200
+   * carrying one client's counters would be replayed to everyone by the CDN. */
   headers: Record<string, string>;
-  /** Resolves background work (analytics/sync); pass to waitUntil if available. */
+  /** Seconds until the window resets (for `Retry-After`). */
+  retryAfter: number;
+  /** Resolves background work (analytics/sync); pass to `after()`. */
   pending?: Promise<unknown>;
 };
 
-/**
- * Check the per-IP rate limit for an incoming edge request. Fail-open on any
- * error or when no writable credential is configured - the public API staying up
- * matters more than enforcing the limit during an Upstash blip.
- */
-export async function rateLimitRequest(req: Request): Promise<RateLimitResult> {
-  const rl = getLimiter();
-  if (!rl) return { success: true, headers: {} };
+const ALLOW: RateLimitResult = { success: true, headers: {}, retryAfter: 0 };
 
-  const ip = getClientIp(req);
+function secondsUntil(resetMs: number): number {
+  return Math.max(1, Math.ceil((resetMs - Date.now()) / 1000));
+}
+
+/** Check the per-IP limit for `kind`. Fails open on any error. */
+export async function rateLimitRequest(
+  req: Request,
+  kind: LimitKind = "search",
+): Promise<RateLimitResult> {
+  const l = getLimiters();
+  if (!l) return ALLOW;
   try {
-    const { success, limit, remaining, reset, pending } = await rl.limit(ip);
+    const { success, limit, remaining, reset, pending } = await l[kind].limit(
+      getClientIp(req),
+    );
+    const retryAfter = secondsUntil(reset);
     return {
       success,
       pending,
+      retryAfter,
       headers: {
         "RateLimit-Limit": String(limit),
         "RateLimit-Remaining": String(Math.max(0, remaining)),
-        // Reset is a Unix ms timestamp; expose seconds-until-reset, which is what
-        // a `Retry-After`-style consumer expects.
-        "RateLimit-Reset": String(Math.max(0, Math.ceil((reset - Date.now()) / 1000))),
+        "RateLimit-Reset": String(retryAfter),
       },
     };
   } catch (e) {
-    // Redis unreachable / write rejected / any other fault: let the request
-    // through rather than failing the whole API closed.
     console.error("[ratelimit] check failed, allowing request:", e);
-    return { success: true, headers: {} };
+    return ALLOW;
   }
+}
+
+/**
+ * Take one token from the global live-search budget. Call it right before a
+ * real Upstash Search query (never for cache hits). Fails open on any error.
+ */
+export async function globalSearchBudget(): Promise<RateLimitResult> {
+  const l = getLimiters();
+  if (!l) return localGlobalBudget();
+  try {
+    const { success, reset, pending } = await l.global.limit("global");
+    return { success, pending, retryAfter: secondsUntil(reset), headers: {} };
+  } catch (e) {
+    console.error("[ratelimit] global check failed, using per-instance budget:", e);
+    return localGlobalBudget();
+  }
+}
+
+const GLOBAL_WINDOW_MS = durationMs(GLOBAL_WINDOW);
+let localWindow = { start: 0, count: 0 };
+
+/** Fixed window of GLOBAL_LIMIT per GLOBAL_WINDOW on this instance only. */
+function localGlobalBudget(): RateLimitResult {
+  const now = Date.now();
+  if (now - localWindow.start >= GLOBAL_WINDOW_MS) localWindow = { start: now, count: 0 };
+  if (localWindow.count >= GLOBAL_LIMIT) {
+    return {
+      success: false,
+      headers: {},
+      retryAfter: secondsUntil(localWindow.start + GLOBAL_WINDOW_MS),
+    };
+  }
+  localWindow.count++;
+  return ALLOW;
+}
+
+/** "10 s" / "1m" / "500 ms" -> ms (the `Duration` format the limiter takes). */
+function durationMs(d: string): number {
+  const m = /^(\d+)\s*(ms|s|m|h|d)$/.exec(d.trim());
+  const unit = { ms: 1, s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 };
+  return m ? Number(m[1]) * unit[m[2] as keyof typeof unit] : 1000;
 }
