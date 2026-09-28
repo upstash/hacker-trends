@@ -9,15 +9,14 @@
  *
  * The two things worth understanding here:
  *
- *  1. Month binning. The aggregate uses `$dateHistogram` with `fixedInterval:
- *     "30d"` (NOT calendar months). 30d buckets drift against calendar months:
- *     over a year ~12.17 buckets land in 12 months, so some calendar months
- *     catch two 30d buckets and some catch none. If you naively render one bar
- *     per 30d bucket you get the white-gap artifact (and unaligned x). So we
- *     fold the 30d buckets into true calendar months (`binMonths`) and then walk
- *     a CONTIGUOUS month-index range (`monthRange`/`buildColumns`), defaulting
- *     every absent month to a real zero. That contiguous walk - not the sparse
- *     bucket list - is what makes the chart gap-free.
+ *  1. Month binning. On the dedicated `hnjobs` index the aggregate is a `$range`
+ *     over `time` with one range per CALENDAR month (see `buildAggregateOptions`
+ *     in hn-query.ts), so each bucket key is already a 1st-of-month UTC epoch and
+ *     `binMonths` maps it 1:1. The legacy `hn` scope=jobs fallback still returns
+ *     30d `$dateHistogram` buckets, which `binMonths` folds by start date (lossy:
+ *     a bucket that starts late in a month carries the NEXT month's thread). We
+ *     then walk a CONTIGUOUS month-index range (`monthRange`/`buildColumns`),
+ *     defaulting every absent month to a real zero, so the chart is gap-free.
  *
  *  2. OR-groups. A series string may contain `|` (e.g. `backend|sre|devops`).
  *     Each part is aggregated separately (scope=jobs) and the per-month counts
@@ -128,6 +127,32 @@ export function parseParts(text: string): string[] {
     .filter(Boolean);
 }
 
+/** Canonical form of a series string: lowercased parts joined by `|` (the
+ *  search is case-insensitive, so `Python` and `python` are the same series). */
+export function normalizeSeries(text: string): string {
+  return parseParts(text.toLowerCase()).join("|");
+}
+
+/**
+ * The series the chart actually draws for a chip row: each chip normalized,
+ * empties and duplicates dropped, capped at MAX_SERIES. `slotOf[i]` is chip
+ * i's index into `series` (null for an empty/duplicate chip), so a chip's color
+ * is always `colorAt(slotOf[i])`, the same color as its band.
+ */
+export function seriesSlots(chips: string[]): {
+  series: string[];
+  slotOf: (number | null)[];
+} {
+  const series: string[] = [];
+  const slotOf = chips.map((c) => {
+    const n = normalizeSeries(c);
+    if (!n || series.includes(n) || series.length >= MAX_SERIES) return null;
+    series.push(n);
+    return series.length - 1;
+  });
+  return { series, slotOf };
+}
+
 /* ---------- calendar-month keys ------------------------------------- */
 
 /** Stable map key for a (year, 0-based monthIndex) cell: `"2021-3"` = Apr 2021.
@@ -143,17 +168,24 @@ export function fromMonthIndex(idx: number): { year: number; month: number } {
   return { year: Math.floor(idx / 12), month: ((idx % 12) + 12) % 12 };
 }
 
-/* ---------- 30d-bucket -> calendar-month binning -------------------- */
+/* ---------- bucket -> calendar-month binning ------------------------ */
 
-/** A raw `$dateHistogram` bucket: `key` is epoch-ms, `docCount` the count. */
+/** A raw aggregate bucket: `key` is epoch-ms, `docCount` the count. */
 export type RawBucket = { key: number; docCount: number };
 
+/** The current calendar month as a global month index (UTC). */
+export function currentMonthIndex(nowMs = Date.now()): number {
+  const d = new Date(nowMs);
+  return monthIndex(d.getUTCFullYear(), d.getUTCMonth());
+}
+
 /**
- * Fold raw 30d-interval buckets into calendar months keyed by `monthKey`. A
- * bucket is attributed to the calendar month its start timestamp (UTC) falls
- * in; two 30d buckets landing in the same calendar month are summed. The result
- * is SPARSE (only months that received a bucket appear) - call `buildColumns`
- * to expand it into a gap-free contiguous range.
+ * Fold raw buckets into calendar months keyed by `monthKey`. A bucket is
+ * attributed to the calendar month its start timestamp (UTC) falls in, and
+ * same-month buckets are summed. `hnjobs` buckets are calendar months already
+ * (exact); legacy 30d buckets are approximated. The result is SPARSE (only
+ * months that received a bucket appear) - call `buildColumns` to expand it into
+ * a gap-free contiguous range.
  */
 export function binMonths(buckets: RawBucket[]): Map<string, number> {
   const byMonth = new Map<string, number>();
@@ -221,13 +253,15 @@ export type Column = {
   total: number;
   fromMs: number;
   toMs: number;
+  /** the in-progress current month: its thread is still collecting postings. */
+  partial: boolean;
 };
 
 /** The latest month-index that ANY series has data in (the window anchor). Falls
- *  back to the manifest's newest month when every series is empty. */
+ *  back to the current calendar month when every series is empty. */
 export function latestMonthIndex(
   series: SeriesData[],
-  fallback = monthIndex(2026, 5),
+  fallback = currentMonthIndex(),
 ): number {
   let max = -1;
   for (const s of series)
@@ -259,8 +293,8 @@ export function monthRange(endIdx: number, windowKey: WindowKey): number[] {
  * no skipped x positions) - this is the fix for the white-gap artifact.
  *
  * `dropEmpty` is the SHARE-% mode behavior: a calendar month with zero total
- * postings across every series (e.g. Apr 2015, a 30d-vs-calendar binning
- * artifact) carries no proportion to show, so in normalized mode it would render
+ * postings across every series (e.g. a month with no hiring thread) carries no
+ * proportion to show, so in normalized mode it would render
  * as a white gap. With `dropEmpty` true those zero-total months are removed from
  * the column set entirely - they are not drawn, not hoverable, and the x-axis
  * simply compacts so the gap vanishes. In COUNT mode pass `dropEmpty` false (the
@@ -270,8 +304,10 @@ export function buildColumns(
   series: SeriesData[],
   windowKey: WindowKey,
   dropEmpty = false,
+  nowMs = Date.now(),
 ): Column[] {
-  const endIdx = latestMonthIndex(series);
+  const endIdx = latestMonthIndex(series, currentMonthIndex(nowMs));
+  const nowIdx = currentMonthIndex(nowMs);
   const cols = monthRange(endIdx, windowKey).map((idx) => {
     const { year, month } = fromMonthIndex(idx);
     const k = monthKey(year, month);
@@ -284,6 +320,7 @@ export function buildColumns(
       total: values.reduce((a, b) => a + b, 0),
       fromMs: Date.UTC(year, month, 1),
       toMs: Date.UTC(year, month + 1, 1),
+      partial: idx === nowIdx,
     };
   });
   return dropEmpty ? cols.filter((c) => c.total > 0) : cols;
@@ -330,20 +367,15 @@ export function factor(d: number, boost: number, radius: number): number {
 /* ---------- drill-down ranking -------------------------------------- */
 
 /**
- * The drill-down ranking key: `relevance + log(1 + replyCount)`, so a heavily
- * discussed posting outranks a quiet one of equal relevance. `relevance` is the
- * index's BM25 `_score`; `replyCount` is the precomputed direct-children count
- * (0 until the dedicated `hnjobs` index lands - then this key starts to bite).
+ * The drill-down ranking formula: `relevance + log(1 + replyCount)`, so a
+ * heavily discussed posting outranks a quiet one of equal relevance. The
+ * `hnjobs` search applies it server-side (a `scoreFunc` over the precomputed
+ * `replies` field, see `buildSearchOptions`), so the returned `_score` already
+ * includes it and the client keeps the server order. Kept as the documented,
+ * tested statement of the formula.
  */
 export function rankKey(relevance: number, replyCount: number): number {
   return relevance + Math.log1p(Math.max(0, replyCount));
-}
-
-/** Stable-sort a candidate set by `rankKey` descending (highest first). */
-export function rankByDiscussion<T extends { relevance: number; replyCount: number }>(
-  docs: T[],
-): T[] {
-  return [...docs].sort((a, b) => rankKey(b.relevance, b.replyCount) - rankKey(a.relevance, a.replyCount));
 }
 
 /* ---------- default drill-down (prefetch on load) ------------------- */
@@ -404,4 +436,42 @@ export function defaultDrillSegment(series: SeriesData[]): DrillSegment | null {
     fromMs: Date.UTC(year, month, 1),
     toMs: Date.UTC(year, month + 1, 1),
   };
+}
+
+/* ---------- posting text: whole-word match + centered snippet -------- */
+
+/** Letters/digits that make up a word; a match must not be flanked by them, so
+ *  "java" never lights up inside "javascript" and "rust" not inside "trust". */
+const WORD = "[\\p{L}\\p{N}]";
+
+/** A case-insensitive whole-word regex for the query's tokens (whitespace and
+ *  `|` separated). null when there is nothing to match. */
+export function termRegex(q: string, flags = "giu"): RegExp | null {
+  const toks = q
+    .split(/[\s|]+/)
+    .map((t) => t.trim())
+    .filter(Boolean)
+    .map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  if (toks.length === 0) return null;
+  return new RegExp(`(?<!${WORD})(${toks.join("|")})(?!${WORD})`, flags);
+}
+
+/** A `max`-char window of `text` around the first whole-word match of `q`
+ *  (about a quarter of the window before it), cut on word boundaries with
+ *  ellipses. Falls back to the head of the text when nothing matches. */
+export function centeredSnippet(text: string, q: string, max: number): string {
+  if (text.length <= max) return text;
+  const re = termRegex(q, "iu");
+  const m = re ? re.exec(text) : null;
+  let start = m ? Math.max(0, m.index - Math.floor(max / 4)) : 0;
+  if (start > 0) {
+    const sp = text.indexOf(" ", start);
+    if (sp >= 0 && sp < (m?.index ?? start)) start = sp + 1;
+  }
+  let end = Math.min(text.length, start + max);
+  if (end < text.length) {
+    const sp = text.lastIndexOf(" ", end);
+    if (sp > start + max * 0.6) end = sp;
+  }
+  return (start > 0 ? "…" : "") + text.slice(start, end) + (end < text.length ? "…" : "");
 }

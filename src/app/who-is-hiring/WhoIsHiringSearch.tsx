@@ -9,158 +9,91 @@
  *   Popular comparisons).
  *
  * This file is the SHELL: it owns the page chrome (HN header, pitch) and the
- * top-level series/window/normalization state. The chart centerpiece (T05/T06)
- * is live; the compare chips (T08) and comment drill-down (T09) are now wired in
- * too - hovering or clicking a bar segment streams that term's postings for that
- * month into the panel. The galleries (T12) are still reserved-height
- * placeholders so wiring them in later causes no layout shift.
+ * top-level series/window/normalization state. The comparison lives in the URL
+ * (`?q=a&q=b`, like the homepage) so a shared link opens the same chart: it is
+ * read client-side (the page itself is static) and rewritten with
+ * `history.replaceState` once the user changes it; the untouched default view
+ * keeps the clean `/who-is-hiring` URL.
  */
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  DEFAULT_TERMS,
-  defaultDrillSegment,
-  monthKey,
-  type WindowKey,
-} from "@/lib/jobs-trends";
-import { JobsStackedBars, type SegmentHit, type LatchKey } from "./JobsStackedBars";
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { DEFAULT_TERMS, MAX_SERIES, seriesSlots } from "@/lib/jobs-trends";
+import { JobsStackedBars, useChartWindow } from "./JobsStackedBars";
 import { JobsCompareChips } from "./JobsCompareChips";
 import { JobsComments } from "./JobsComments";
 import { JobsGalleries } from "./JobsGalleries";
 import { useJobSeries } from "./useJobSeries";
-import { useJobComments } from "./useJobComments";
+import { useJobsDrill } from "./useJobsDrill";
 import { QUERYING_DISABLED } from "@/lib/maintenance";
 import { trackOutbound } from "@/lib/analytics";
 
+/** How long the URL waits for the chips to settle before it is rewritten. */
+const URL_SYNC_MS = 400;
+
+const noSubscribe = () => () => {};
+
+/** The `?q=` terms of the landing URL (client only; null on the server and when
+ *  absent, so the server render and hydration use the defaults). */
+function useUrlTerms(): string[] | null {
+  const search = useSyncExternalStore(
+    noSubscribe,
+    () => window.location.search,
+    () => null,
+  );
+  return useMemo(() => {
+    if (search == null) return null;
+    const q = new URLSearchParams(search)
+      .getAll("q")
+      .map((t) => t.trim())
+      .filter(Boolean)
+      .slice(0, MAX_SERIES);
+    return q.length ? q : null;
+  }, [search]);
+}
+
 export function WhoIsHiringSearch() {
-  // Top-level state the chart + chips drive. Held here so a click on a gallery
-  // card (T12) can swap the whole comparison.
-  const [terms, setTerms] = useState<string[]>(DEFAULT_TERMS);
-  const [windowKey, setWindowKey] = useState<WindowKey>("all");
+  // The comparison: the user's own pick, else the shared link's `?q=`, else the
+  // default. Held here so a click on a gallery card (T12) can swap it.
+  const urlTerms = useUrlTerms();
+  const [picked, setPicked] = useState<string[] | null>(null);
+  const terms = picked ?? urlTerms ?? DEFAULT_TERMS;
+  const [windowKey, setWindowKey] = useChartWindow();
   const [normalized, setNormalized] = useState(true);
 
   // Live job-scoped, per-month series for the current comparison.
-  const { series, loading } = useJobSeries(terms);
+  const { series, loading, error, retry } = useJobSeries(terms);
+  const termsKey = series.map((s) => s.label).join("§");
 
-  // The hover/click drill-down (T09).
-  const { state: commentsState, load: loadComments, loadMore: loadMoreComments } =
-    useJobComments();
+  // The hover/click drill-down (T09) + its pin and one-time prefetch (T10).
+  const drill = useJobsDrill(series, loading, termsKey);
 
-  // The segment behind the current drill-down: its raw count + calendar month.
-  // `useJobComments`'s `CommentLoad` doesn't carry these, so we track them here
-  // and hand them to the panel header (the count readout + the month->thread
-  // link mapping). Kept in sync with every `loadComments` call below.
-  const [drillMeta, setDrillMeta] = useState<{
-    value: number;
-    year: number;
-    /** 0-based month. */
-    month: number;
-  } | null>(null);
-
-  // True once the USER has driven the drill-down (a real hover or click). The
-  // one-time prefetch below only fires while this is false, so we never yank a
-  // posting the user is reading out from under them to re-show the default.
-  const userDrilled = useRef(false);
-  // Guards the prefetch to the FIRST default comparison only: once it has run we
-  // never auto-load again, so swapping the comparison (chips / gallery card)
-  // leaves the panel as-is until the user hovers the new chart.
-  const prefetched = useRef(false);
-
-  // Each series' all-time total, keyed by its label, for the compare chips.
-  const totalByLabel = useMemo(() => {
-    const m = new Map<string, number>();
-    for (const s of series) m.set(s.label, s.total);
-    return m;
-  }, [series]);
+  // Mirror a user-changed comparison into the URL (debounced). The default view
+  // is left alone so `/who-is-hiring` stays canonical until the user acts.
+  useEffect(() => {
+    if (!picked) return;
+    const t = setTimeout(() => {
+      const next = seriesSlots(picked).series;
+      const isDefault = next.join("|") === DEFAULT_TERMS.join("|");
+      const sp = new URLSearchParams();
+      if (!isDefault) for (const q of next) sp.append("q", q);
+      const qs = sp.toString();
+      const url = `${window.location.pathname}${qs ? `?${qs}` : ""}${window.location.hash}`;
+      // `null` state (like the homepage) takes Next's synced replaceState path.
+      window.history.replaceState(null, "", url);
+    }, URL_SYNC_MS);
+    return () => clearTimeout(t);
+  }, [picked]);
 
   /** Load a gallery card's terms into the big chart (a card click). The
    *  drill-down panel intentionally stays as-is until the user hovers the new
-   *  chart - the prefetch guard above only ever fires for the first default. */
+   *  chart. */
   const pickCard = useCallback((next: string[]) => {
-    setTerms(next);
+    setPicked(next);
     if (typeof window !== "undefined") {
       window.scrollTo({ top: 0, behavior: "smooth" });
     }
   }, []);
-
-  // The segment PINNED by a click. While one is pinned, hovering other bars must
-  // NOT change the drill-down (a click should stay put); clicking the pinned bar
-  // again unpins it and resumes hover-to-preview. A ref mirror lets the debounced
-  // hover handler read the current pin without being recreated (so the chart's
-  // memoized callbacks stay stable).
-  const [latched, setLatched] = useState<LatchKey | null>(null);
-  const latchedRef = useRef<LatchKey | null>(null);
-  latchedRef.current = latched;
-
-  /** Stream the postings behind a segment into the panel. */
-  const showSegment = useCallback(
-    (hit: SegmentHit) => {
-      if (QUERYING_DISABLED) return; // drill-down needs live queries
-      userDrilled.current = true;
-      setDrillMeta({ value: hit.value, year: hit.year, month: hit.month });
-      loadComments({
-        label: hit.series.label,
-        color: hit.series.color,
-        fromMs: hit.fromMs,
-        toMs: hit.toMs,
-        year: hit.year,
-        month: hit.month,
-      });
-    },
-    [loadComments],
-  );
-
-  /** Hover: preview a segment, but never while one is pinned. */
-  const onHoverSegment = useCallback(
-    (hit: SegmentHit) => {
-      if (latchedRef.current) return;
-      showSegment(hit);
-    },
-    [showSegment],
-  );
-
-  /** Click: pin this segment so hover stops changing it; click it again to unpin. */
-  const onSelectSegment = useCallback(
-    (hit: SegmentHit) => {
-      setLatched((prev) =>
-        prev &&
-        prev.seriesIndex === hit.seriesIndex &&
-        prev.year === hit.year &&
-        prev.month === hit.month
-          ? null
-          : { seriesIndex: hit.seriesIndex, year: hit.year, month: hit.month },
-      );
-      showSegment(hit);
-    },
-    [showSegment],
-  );
-
-  // Prefetch the default comparison's drill-down on load (T10): once the default
-  // series resolves, populate the panel with the dominant band's latest month so
-  // it is never empty on first paint. Fires at most once and only if the user
-  // has not already drilled in (a fast hover before the aggregate returns wins).
-  useEffect(() => {
-    if (QUERYING_DISABLED) return; // nothing to prefetch while the DB is down
-    if (prefetched.current || userDrilled.current) return;
-    if (loading) return; // wait for the real series, not the zero placeholders
-    const seg = defaultDrillSegment(series);
-    if (!seg) return;
-    prefetched.current = true;
-    const s = series[seg.seriesIndex];
-    // The segment's raw count for the header readout (defaultDrillSegment only
-    // returns the coordinates, so look the value up in the series' month map).
-    const value = s.byMonth.get(monthKey(seg.year, seg.month)) ?? 0;
-    setDrillMeta({ value, year: seg.year, month: seg.month });
-    loadComments({
-      label: s.label,
-      color: s.color,
-      fromMs: seg.fromMs,
-      toMs: seg.toMs,
-      year: seg.year,
-      month: seg.month,
-    });
-  }, [loading, series, loadComments]);
 
   return (
     <div className="mx-auto" style={{ maxWidth: 1350 }}>
@@ -219,8 +152,8 @@ export function WhoIsHiringSearch() {
       <div className="px-3 pt-4">
         <JobsCompareChips
           terms={terms}
-          setTerms={setTerms}
-          totalFor={(t) => totalByLabel.get(t)}
+          setTerms={setPicked}
+          totalAt={(i) => series[i]?.total}
         />
       </div>
 
@@ -233,19 +166,21 @@ export function WhoIsHiringSearch() {
           normalized={normalized}
           onToggleNormalized={setNormalized}
           showYearAxis
-          onHover={onHoverSegment}
-          onSelect={onSelectSegment}
-          selected={latched}
+          onHover={drill.onHover}
+          onSelect={drill.onSelect}
+          selected={drill.latched}
           loading={loading}
+          error={error}
+          onRetry={retry}
         />
       </div>
 
       {/* Comment drill-down (T09) ------------------------------------ */}
       <div className="px-3 pt-4 min-h-[240px]">
         <JobsComments
-          state={commentsState}
-          segment={drillMeta}
-          onLoadMore={loadMoreComments}
+          state={drill.comments}
+          onLoadMore={drill.loadMore}
+          onRetry={drill.retry}
           disabled={QUERYING_DISABLED}
         />
       </div>

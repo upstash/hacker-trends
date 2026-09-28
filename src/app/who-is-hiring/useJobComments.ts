@@ -3,64 +3,51 @@
 /**
  * Imperative data hook for the comment drill-down (T09).
  *
- * Given a `SegmentHit` (a term in one calendar month, from the chart), this
- * loads that series' actual job postings for that month, scoped to jobs and
- * date-ranged to the month, and ranks them by `relevance + log(1 + replyCount)`
- * (`rankByDiscussion`) so the most-discussed postings surface first.
- *
- * `replyCount` is each posting's direct-children count. `drillIndex()` (T15)
- * picks the corpus: when the dedicated `hnjobs` index is ready it queries that
- * (each doc carries a real `replies` count, so the ranking bites immediately);
- * otherwise it falls back to the shared `hn` index scoped to jobs, where
- * `replies`/`ndesc` are 0 and the ranking is effectively pure relevance. The
- * code reads `replies ?? ndesc`, so the ordering tightens automatically the day
- * the dedicated index is switched on (Spec: "falls back to the `hn` scope=jobs
- * search until T15 swaps in the dedicated index").
+ * Given a segment (a term in one calendar month, from the chart), this loads
+ * that series' actual job postings for that month, date-ranged to the month on
+ * the jobs index. On `hnjobs` the server already ranks by
+ * `relevance + log(1 + replies)` (`scoreFunc`, see `rankKey` in jobs-trends.ts),
+ * so a single-part series keeps the server order; an OR-group merges its parts'
+ * pages by that same `_score`.
  *
  * The LAST hover/click stays on screen until the next one replaces it: a stale
  * response can never overwrite a newer one (guarded by a monotonic request id),
  * but we never clear on mouse-leave - that would make the panel flicker as the
  * cursor crosses the dense bars.
  *
- * PERFORMANCE. The raw `hnjobs` drill query is ~190-200ms, so the only way to
- * make a REPEAT feel instant is to not re-run it. Two caches make that happen:
- *   - an in-memory `resultCache` of the final ranked top-10 keyed by the resolved
- *     segment query, served SYNCHRONOUSLY on a repeat (0ms, no `loading` flash);
- *   - the browser HTTP cache, which the deterministic per-(term,month) `/api/hn`
- *     URL now populates (the client dropped `cache: no-store`, the edge sets a
- *     `max-age`), so even a cold `resultCache` miss on a repeat skips the network.
- * In-flight loads are also deduped by key, and a started fetch warms the cache
- * even if its consumer has already moved on (free prefetch as the cursor sweeps).
+ * PAGINATION: "Load more" asks each part for its NEXT page (`offset`), and
+ * appends, so every page is its own deterministic, cacheable `/api/hn` URL. A
+ * failed page keeps the postings already on screen.
+ *
+ * CACHING: an in-memory `resultCache` holds each segment's accumulated postings
+ * (first page plus any loaded-more pages), served SYNCHRONOUSLY on a repeat
+ * hover/click (0ms, no `loading` flash). In-flight first pages are deduped by
+ * key, and a started fetch warms the cache even if its consumer has moved on.
  */
 
-import { useRef, useState } from "react";
-import { searchPosts, type HnDoc } from "@/lib/hn-search";
-import { parseParts, rankByDiscussion } from "@/lib/jobs-trends";
+import { useCallback, useRef, useState } from "react";
+import { searchPosts, friendlyError, type HnDoc } from "@/lib/hn-search";
+import { currentMonthIndex, monthIndex, parseParts } from "@/lib/jobs-trends";
 import { drillIndex } from "@/lib/jobs-index";
 import { QUERYING_DISABLED } from "@/lib/maintenance";
 
-/**
- * Module-level result cache for the drill-down, keyed by the FULLY-resolved
- * query (`index | scope | sorted-parts | from | to`). Two layers of repeat-hover
- * savings stack here:
- *
- *   1. The browser HTTP cache (the per-(term,month) `/api/hn` URL is deterministic
- *      and now served with a `max-age`, and the client no longer sends
- *      `cache: no-store`) - so even a cache MISS here is cheap on a repeat.
- *   2. This in-memory map - the FINAL ranked top-10 for a segment, so a repeat
- *      hover/click is served SYNCHRONOUSLY (0ms, no fetch, no `loading` flash, no
- *      re-rank), which is what makes the panel feel instant.
- *
- * It also dedupes IN-FLIGHT loads: a hover then an immediate click of the same
- * segment shares the one pending promise instead of firing a second query.
- *
- * The key is order-independent in the OR-group parts (parts are sorted) so
- * `backend|sre` and `sre|backend` hit the same entry. The cache lives for the
- * page's lifetime; the dataset is a periodic ingest, so within a session it
- * never goes stale enough to matter (the HTTP layer's TTL handles real refresh).
- */
-const resultCache = new Map<string, HnDoc[]>();
-const inflight = new Map<string, Promise<HnDoc[]>>();
+/** Initial number of postings a drill-down loads (per OR-group part). */
+const PAGE = 12;
+/** How many more the "Load more" button pulls in each press (per part). */
+const PAGE_STEP = 16;
+/** Hard cap so a dense month can't be paged forever. */
+const PAGE_MAX = 80;
+
+/** One segment's accumulated result: the merged postings, each part's next
+ *  offset, and whether any part may have more. */
+type Accum = {
+  docs: HnDoc[];
+  offsets: Record<string, number>;
+  more: Record<string, boolean>;
+};
+
+const resultCache = new Map<string, Accum>();
+const inflight = new Map<string, Promise<Accum>>();
 
 function cacheKey(
   index: string,
@@ -68,17 +55,9 @@ function cacheKey(
   parts: string[],
   from: string,
   to: string,
-  limit: number,
 ): string {
-  return `${index}|${scope ?? ""}|${[...parts].sort().join("|")}|${from}|${to}|${limit}`;
+  return `${index}|${scope ?? ""}|${[...parts].sort().join("|")}|${from}|${to}`;
 }
-
-/** Initial number of postings a drill-down loads. */
-const PAGE = 12;
-/** How many more the "Load more" button pulls in each press. */
-const PAGE_STEP = 16;
-/** Hard cap so a dense month (e.g. python in a peak month) can't fetch unbounded. */
-const PAGE_MAX = 80;
 
 /** What the panel is currently showing: which series, which month, the docs. */
 export type CommentLoad = {
@@ -88,19 +67,25 @@ export type CommentLoad = {
   parts: string[];
   /** the series' color (the dot next to the panel title). */
   color: string;
-  /** human label for the month, e.g. "Apr 2021". */
+  /** human label for the month, e.g. "Apr 2021" (+ "so far" when in progress). */
   periodLabel: string;
+  year: number;
+  /** 0-based month. */
+  month: number;
+  /** the segment's posting count from the chart, when known. */
+  value?: number;
 };
 
 export type CommentsState = {
   status: "idle" | "loading" | "done" | "error";
   load: CommentLoad | null;
   docs: HnDoc[];
-  /** true when the last page came back full, so more postings may exist (and we
-   *  haven't hit `PAGE_MAX`) - drives the "Load more" button. */
+  /** true when some part may have more postings (and we're under `PAGE_MAX`). */
   hasMore: boolean;
   /** true while a "Load more" fetch is in flight (the current docs stay visible). */
   loadingMore: boolean;
+  /** friendly message for a failed first page (status "error") or load-more. */
+  error: string | null;
 };
 
 const IDLE: CommentsState = {
@@ -109,6 +94,7 @@ const IDLE: CommentsState = {
   docs: [],
   hasMore: false,
   loadingMore: false,
+  error: null,
 };
 
 const MONTH_ABBR = [
@@ -125,58 +111,116 @@ export type LoadArgs = {
   year: number;
   /** 0-based month. */
   month: number;
+  /** the segment's count, shown in the panel header. */
+  value?: number;
 };
+
+function hasMoreOf(a: Accum): boolean {
+  return a.docs.length < PAGE_MAX && Object.values(a.more).some(Boolean);
+}
+
+/** Merge new docs after `prev`, de-duped by id. Several parts' pages are
+ *  interleaved by `_score` (the server's reply-aware relevance). */
+function mergeDocs(prev: HnDoc[], lists: HnDoc[][]): HnDoc[] {
+  const seen = new Set(prev.map((d) => d.id));
+  const fresh: HnDoc[] = [];
+  for (const list of lists)
+    for (const d of list)
+      if (!seen.has(d.id)) {
+        seen.add(d.id);
+        fresh.push(d);
+      }
+  if (lists.length > 1) fresh.sort((a, b) => (b._score ?? 0) - (a._score ?? 0));
+  return [...prev, ...fresh];
+}
+
+type Seg = {
+  args: LoadArgs;
+  meta: CommentLoad;
+  parts: string[];
+  key: string;
+  from: string;
+  to: string;
+};
+
+/** Fetch one page per part (only the parts that may have more), starting at
+ *  each part's offset, and fold it into `prev`. */
+async function fetchPage(seg: Seg, prev: Accum | null, limit: number): Promise<Accum> {
+  const { index, scope } = drillIndex();
+  const base: Accum = prev ?? { docs: [], offsets: {}, more: {} };
+  const parts = prev ? seg.parts.filter((p) => base.more[p]) : seg.parts;
+  const lists = await Promise.all(
+    parts.map((p) =>
+      searchPosts({
+        q: p,
+        scope,
+        index,
+        from: seg.from,
+        to: seg.to,
+        sort: "relevance",
+        limit,
+        offset: base.offsets[p] ?? 0,
+      }).then((r) => r.docs),
+    ),
+  );
+  const offsets = { ...base.offsets };
+  const more = { ...base.more };
+  parts.forEach((p, i) => {
+    offsets[p] = (offsets[p] ?? 0) + lists[i].length;
+    more[p] = lists[i].length >= limit;
+  });
+  const docs = mergeDocs(base.docs, lists).slice(0, PAGE_MAX);
+  // A page that added nothing new (e.g. an endpoint that ignores `offset`)
+  // means we're done, whatever the page size said.
+  if (prev && docs.length === base.docs.length) for (const p of parts) more[p] = false;
+  return { docs, offsets, more };
+}
 
 export function useJobComments() {
   const [state, setState] = useState<CommentsState>(IDLE);
-  // A monotonic id stamps each load; only the result of the LATEST id is allowed
-  // to land. This replaces signal-aborting the fetches: the shared in-flight job
-  // (keyed by segment, below) must outlive a single consumer leaving so it can
-  // still warm the cache for the very next hover as the cursor crosses the dense
-  // bars, so we drop stale results by id rather than tearing the request down.
+  // A monotonic id stamps each load; only the result of the LATEST id may land.
+  // Shared in-flight jobs outlive a single consumer (they still warm the cache
+  // for the next hover), so staleness is handled here, not by aborting.
   const reqId = useRef(0);
-  // The segment currently shown, so "Load more" can re-run the SAME query with a
-  // bigger page size.
-  const current = useRef<{ args: LoadArgs; limit: number } | null>(null);
+  // The segment currently shown, for "Load more" / retry.
+  const current = useRef<Seg | null>(null);
 
-  // Shared by `load` (a fresh segment) and `loadMore` (the same segment, bigger
-  // page). `mode` only changes how the pending state renders: a fresh load shows
-  // the spinner, a "more" load keeps the current postings on screen.
-  const run = (args: LoadArgs, limit: number, mode: "fresh" | "more") => {
+  const load = useCallback((args: LoadArgs) => {
     // Querying disabled: no live posting fetch. Stay idle; the panel renders a
     // plain gray "querying is disabled" note (see JobsComments `disabled`).
     if (QUERYING_DISABLED) return;
     const parts = parseParts(args.label);
     if (parts.length === 0) return;
 
-    const periodLabel = `${MONTH_ABBR[args.month]} ${args.year}`;
+    const partial = monthIndex(args.year, args.month) === currentMonthIndex();
     const meta: CommentLoad = {
       label: args.label,
       parts,
       color: args.color,
-      periodLabel,
+      periodLabel: `${MONTH_ABBR[args.month]} ${args.year}${partial ? " (so far)" : ""}`,
+      year: args.year,
+      month: args.month,
+      value: args.value,
     };
-
     const from = new Date(args.fromMs).toISOString();
     const to = new Date(args.toMs).toISOString();
-
-    // Target the dedicated `hnjobs` index when it's ready (fast + reply-ranked);
-    // otherwise the shared `hn` index scoped to jobs.
     const { index, scope } = drillIndex();
-    const key = cacheKey(index, scope, parts, from, to, limit);
-    current.current = { args, limit };
+    const seg: Seg = { args, meta, parts, key: cacheKey(index, scope, parts, from, to), from, to };
+    current.current = seg;
 
-    const settle = (docs: HnDoc[]) => {
-      // A full page back means there may be more (until the hard cap).
-      const hasMore = docs.length >= limit && limit < PAGE_MAX;
-      setState({ status: "done", load: meta, docs, hasMore, loadingMore: false });
-    };
+    const settle = (a: Accum) =>
+      setState({
+        status: "done",
+        load: meta,
+        docs: a.docs,
+        hasMore: hasMoreOf(a),
+        loadingMore: false,
+        error: null,
+      });
 
-    // FAST PATH: we already have this segment+page's ranked list. Show it
-    // synchronously - no `loading` flash, no network, no re-rank. This is the
-    // repeat-hover/click case the user feels as "instant". Bump the req id so any
-    // older in-flight load can't clobber it.
-    const cached = resultCache.get(key);
+    // FAST PATH: this segment is already loaded (with any extra pages). Show it
+    // synchronously; bump the id so an older in-flight load can't clobber it.
+    const cached = resultCache.get(seg.key);
     if (cached) {
       reqId.current++;
       settle(cached);
@@ -184,110 +228,55 @@ export function useJobComments() {
     }
 
     const id = ++reqId.current;
-    setState((prev) =>
-      mode === "more"
-        ? { ...prev, loadingMore: true }
-        : { status: "loading", load: meta, docs: [], hasMore: false, loadingMore: false },
-    );
+    setState({ ...IDLE, status: "loading", load: meta });
 
-    // Share a single in-flight fetch+rank per key so a hover immediately followed
-    // by a click of the SAME segment doesn't fire two queries, and so the result
-    // warms the cache even if this consumer has already moved on.
-    let job = inflight.get(key);
+    let job = inflight.get(seg.key);
     if (!job) {
-      job = fetchRanked(parts, { index, scope, from, to, limit })
-        .then((ranked) => {
-          resultCache.set(key, ranked);
-          return ranked;
+      job = fetchPage(seg, null, PAGE)
+        .then((a) => {
+          resultCache.set(seg.key, a);
+          return a;
         })
-        .finally(() => {
-          inflight.delete(key);
-        });
-      inflight.set(key, job);
+        .finally(() => inflight.delete(seg.key));
+      inflight.set(seg.key, job);
     }
-
     job
-      .then((ranked) => {
-        if (id !== reqId.current) return; // a newer load won
-        settle(ranked);
+      .then((a) => {
+        if (id === reqId.current) settle(a);
       })
-      .catch(() => {
+      .catch((e) => {
         if (id !== reqId.current) return;
-        setState({
-          status: "error",
-          load: meta,
-          docs: [],
-          hasMore: false,
-          loadingMore: false,
-        });
+        setState({ ...IDLE, status: "error", load: meta, error: friendlyError(e) });
       });
-  };
-
-  const load = (args: LoadArgs) => run(args, PAGE, "fresh");
+  }, []);
 
   /** Pull the next page of postings for the segment already on screen. */
-  const loadMore = () => {
-    const cur = current.current;
-    if (!cur) return;
-    const next = Math.min(PAGE_MAX, cur.limit + PAGE_STEP);
-    if (next === cur.limit) return; // already at the cap
-    run(cur.args, next, "more");
-  };
+  const loadMore = useCallback(() => {
+    const seg = current.current;
+    const prev = seg ? resultCache.get(seg.key) : undefined;
+    if (!seg || !prev || !hasMoreOf(prev)) return;
+    const id = ++reqId.current;
+    setState((s) => ({ ...s, loadingMore: true, error: null }));
+    fetchPage(seg, prev, PAGE_STEP)
+      .then((a) => {
+        resultCache.set(seg.key, a);
+        if (id !== reqId.current) return;
+        setState((s) => ({ ...s, docs: a.docs, hasMore: hasMoreOf(a), loadingMore: false }));
+      })
+      .catch((e) => {
+        if (id !== reqId.current) return;
+        // Keep the postings already on screen; just surface the failure.
+        setState((s) => ({ ...s, loadingMore: false, error: friendlyError(e) }));
+      });
+  }, []);
 
-  return { state, load, loadMore };
-}
+  /** Re-run whatever failed: the first page, or the last "Load more". */
+  const retry = useCallback(() => {
+    const seg = current.current;
+    if (!seg) return;
+    if (resultCache.has(seg.key)) loadMore();
+    else load(seg.args);
+  }, [load, loadMore]);
 
-/**
- * Run the OR-group's per-part searches in parallel, union by id, rank by
- * `relevance + log(1 + replyCount)`, and return the top 10. Kept signal-free so a
- * shared in-flight job isn't aborted by one consumer leaving - staleness is
- * handled by the `reqId` guard at the call site, and the completed result still
- * populates the cache for the next hover.
- */
-async function fetchRanked(
-  parts: string[],
-  opts: {
-    index: ReturnType<typeof drillIndex>["index"];
-    scope: ReturnType<typeof drillIndex>["scope"];
-    from: string;
-    to: string;
-    limit: number;
-  },
-): Promise<HnDoc[]> {
-  const lists = await Promise.all(
-    parts.map((p) =>
-      searchPosts({
-        q: p,
-        scope: opts.scope,
-        index: opts.index,
-        from: opts.from,
-        to: opts.to,
-        sort: "relevance",
-        limit: opts.limit,
-      }).then((r) => r.docs),
-    ),
-  );
-  // Union the OR-group parts, de-duped by id (a posting matching two parts shows
-  // once).
-  const seen = new Set<number>();
-  const merged: HnDoc[] = [];
-  for (const list of lists)
-    for (const d of list)
-      if (!seen.has(d.id)) {
-        seen.add(d.id);
-        merged.push(d);
-      }
-  // Rank by relevance + log(1 + replyCount). `_score` is BM25 from the index;
-  // `replies` is the precomputed direct-children count on `hnjobs` (and `ndesc`
-  // is the equivalent 0-valued field on `hn`). Prefer `replies` when present so
-  // the ranking bites on the dedicated index. Take the top 10 after the merge.
-  return rankByDiscussion(
-    merged.map((d) => ({
-      doc: d,
-      relevance: d._score ?? 0,
-      replyCount: d.replies ?? d.ndesc ?? 0,
-    })),
-  )
-    .map((x) => x.doc)
-    .slice(0, opts.limit);
+  return { state, load, loadMore, retry };
 }

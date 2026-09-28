@@ -15,22 +15,20 @@
  *   - the curated keyword-led analysis from `jobs-seo.ts`;
  *   - dense internal links into the hub, sibling skills and the comparisons.
  *
- * Curated terms (bespoke copy in `jobs-seo.ts`) are prebuilt + indexed + in the
- * sitemap; any other term renders via the keyword-led template but is
- * noindex,follow (crawlable, kept out of the sitemap).
+ * Curated terms (bespoke copy in `jobs-seo.ts`) are indexed + in the sitemap;
+ * the other gallery terms render via the keyword-led template but are
+ * noindex,follow (crawlable, kept out of the sitemap); any other slug 404s.
  */
 
 import type { Metadata } from "next";
 import Link from "next/link";
-import { notFound } from "next/navigation";
-import { abs, termToSlug, comparisonSlug, slugToTerm } from "@/lib/site";
+import { notFound, permanentRedirect } from "next/navigation";
+import { abs, termToSlug, comparisonSlug } from "@/lib/site";
 import { jobsTermSeo, hasCuratedJobsTerm, jobsDisplayTerm } from "@/lib/jobs-seo";
-import {
-  allGalleryTerms,
-  jobsSiblingTerms,
-  jobsComparisonsForTerm,
-} from "@/lib/jobs-gallery";
+import { jobsSiblingTerms, jobsComparisonsForTerm } from "@/lib/jobs-gallery";
 import { getJobsTermLanding } from "@/lib/jobs-landing-data";
+import { jobsMetadata } from "../_seo/meta";
+import { termFor } from "./term";
 import { JobsPostingSample } from "../_seo/JobsPostingSample";
 import { JobsLandingChart } from "../JobsLandingChart";
 import {
@@ -41,16 +39,17 @@ import {
 import { JsonLd } from "@/app/components/JsonLd";
 import { RedisSearchCTA } from "@/app/components/RedisSearchCTA";
 
-// Rendered on demand from live Upstash Redis Search (via the `@upstash/redis`
-// SDK), then CDN-cached - we don't prerender at build time (the index refreshes
-// out of band, and prerendering every term would fan out hundreds of SDK queries
-// during the build). Matches the prior `fetch(..., {cache:"no-store"})` behavior
-// that already kept this route dynamic.
-export const dynamic = "force-dynamic";
+// ISR: rendered on the first request, then served from the cache and refreshed
+// in the background at most once a day, so a traffic spike is CDN hits, not DB
+// queries. `force-static` keeps the SDK's `no-store` fetches from flipping the
+// render to dynamic. Nothing is prerendered at build (no DB at build time); a
+// render that had to degrade shortens its own lifetime (jobs-landing-data.ts).
+export const dynamic = "force-static";
+export const revalidate = 86400;
 export const dynamicParams = true;
 
 export function generateStaticParams() {
-  return allGalleryTerms().map((term) => ({ term: termToSlug(term) }));
+  return [];
 }
 
 export async function generateMetadata({
@@ -58,23 +57,15 @@ export async function generateMetadata({
 }: {
   params: Promise<{ term: string }>;
 }): Promise<Metadata> {
-  const { term: slug } = await params;
-  const term = slugToTerm(slug);
+  const term = termFor((await params).term);
+  if (!term) return {};
   const seo = jobsTermSeo(term);
-  const path = `/who-is-hiring/${termToSlug(term)}`;
-  return {
-    title: { absolute: seo.title },
+  return jobsMetadata({
+    title: seo.title,
     description: seo.description,
-    alternates: { canonical: abs(path) },
-    robots: hasCuratedJobsTerm(term) ? undefined : { index: false, follow: true },
-    openGraph: {
-      title: seo.title,
-      description: seo.description,
-      url: abs(path),
-      type: "article",
-    },
-    twitter: { title: seo.title, description: seo.description },
-  };
+    path: `/who-is-hiring/${termToSlug(term)}`,
+    noindex: !hasCuratedJobsTerm(term),
+  });
 }
 
 /** "Apr 2011" -> readable; pct formatting for the remote share. */
@@ -88,15 +79,18 @@ export default async function WhoIsHiringTermPage({
   params: Promise<{ term: string }>;
 }) {
   const { term: slug } = await params;
-  const term = slugToTerm(slug);
+  const term = termFor(slug);
   if (!term) notFound();
+  // One cached page per term: variants ("PYTHON", "python-") redirect to the
+  // canonical slug instead of minting their own ISR entry (and queries).
+  if (termToSlug(term) !== slug) permanentRedirect(`/who-is-hiring/${termToSlug(term)}`);
 
   const seo = jobsTermSeo(term);
   const display = jobsDisplayTerm(term);
   const path = `/who-is-hiring/${termToSlug(term)}`;
 
   // All the page's data, server-side, at render/revalidate time.
-  const { stats, postings, remote } = await getJobsTermLanding(term);
+  const { series, stats, postings, remote, renderedAt } = await getJobsTermLanding(term);
 
   const siblings = jobsSiblingTerms(term, 8);
   const relatedComparisons = jobsComparisonsForTerm(term);
@@ -144,7 +138,10 @@ export default async function WhoIsHiringTermPage({
       </div>
 
       {/* Big, obvious path into the interactive tool. */}
-      <JobsToolCta label={`Search & compare ${display} in the Who Is Hiring? tool`} />
+      <JobsToolCta
+        label={`Search & compare ${display} in the Who Is Hiring? tool`}
+        terms={[term]}
+      />
 
       {/* stat strip - the quick numbers a job-seeker scans first */}
       <div className="px-3 pt-4 flex flex-wrap gap-x-8 gap-y-2 text-[12px]">
@@ -154,7 +151,7 @@ export default async function WhoIsHiringTermPage({
         />
         {stats.latestLabel && (
           <Stat
-            label={`This month (${stats.latestLabel})`}
+            label={`This month (${stats.latestLabel}${stats.latestPartial ? " so far" : ""})`}
             value={stats.latestCount.toLocaleString()}
           />
         )}
@@ -174,7 +171,7 @@ export default async function WhoIsHiringTermPage({
           a meaningless flat band with one term, so that toggle is hidden); add
           another skill via the chips to unlock the share-of-voice view. */}
       <div className="px-3 pt-5">
-        <JobsLandingChart initialTerms={[term]} />
+        <JobsLandingChart initialTerms={[term]} initialSeries={series} renderedAt={renderedAt} />
         <p className="text-[11px] text-[color:var(--hn-subtle)] mt-2 max-w-[760px] leading-relaxed">
           Monthly {display} job postings in the Hacker News Who is hiring? thread,
           one bar per calendar month since 2011. Narrow the window, add another
@@ -267,7 +264,10 @@ export default async function WhoIsHiringTermPage({
         )}
 
         <p className="text-[12px] mt-4">
-          <Link href="/who-is-hiring" className="text-[color:var(--hn-orange)]">
+          <Link
+            href={`/who-is-hiring?q=${encodeURIComponent(term)}`}
+            className="text-[color:var(--hn-orange)]"
+          >
             Compare {display} with anything else
           </Link>{" "}
           on the full Who Is Hiring? chart, or see{" "}

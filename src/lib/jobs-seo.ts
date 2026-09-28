@@ -36,7 +36,7 @@
  */
 
 import { termToSlug, comparisonSlug } from "./site";
-import { CATEGORY_CARDS, type GalleryCard } from "./jobs-gallery";
+import { CATEGORY_CARDS, GALLERY, type GalleryCard } from "./jobs-gallery";
 
 /* ------------------------------------------------------------------ types */
 
@@ -702,6 +702,25 @@ export function hasCuratedJobsTerm(termOrSlug: string): boolean {
 /** True when this comparison slug has bespoke (non-template) SEO copy. */
 export function hasCuratedJobsComparison(slug: string): boolean {
   return slug in COMPARISON_SEO;
+}
+
+/** Every term a landing page may exist for: each part of every gallery series
+ *  (so every internal link resolves, and the primed gallery data covers it),
+ *  plus the curated term keys. Lowercased. */
+const LANDING_TERMS: Set<string> = (() => {
+  const set = new Set<string>(Object.keys(TERM_SEO));
+  for (const card of GALLERY)
+    for (const series of card.terms)
+      for (const part of series.split("|")) if (part.trim()) set.add(part.trim().toLowerCase());
+  return set;
+})();
+
+/** Whether `/who-is-hiring/[term]` (or a side of an ad-hoc comparison) should
+ *  render for this term. Anything else 404s, so random slugs can't mint new ISR
+ *  pages (each one a round of live queries). */
+export function isJobsLandingTerm(term: string): boolean {
+  const t = term.trim().toLowerCase();
+  return LANDING_TERMS.has(t) || LANDING_TERMS.has(termToSlug(t));
 }
 
 /* ============================================================================

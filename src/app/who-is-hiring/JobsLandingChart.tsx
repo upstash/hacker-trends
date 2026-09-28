@@ -11,78 +11,42 @@
  * copy + internal links instead). Reusing the same hooks/components keeps a
  * single source of truth for the chart behavior; only the seed terms differ.
  *
- * Like the hub it fetches live job-scoped data on the client AFTER paint, so the
- * server-rendered SEO body (h1, summary, analysis, links) is what crawlers see
- * and what paints first - the chart hydrates in over the reserved height with no
- * layout shift.
+ * The server page hands down the series it already built (`initialSeries`, from
+ * the primed gallery data), so the seeded chart paints with no client fetch;
+ * editing the chips switches to live aggregates like the hub.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { defaultDrillSegment, type WindowKey } from "@/lib/jobs-trends";
-import { JobsStackedBars, type SegmentHit } from "./JobsStackedBars";
+import { useState } from "react";
+import type { SeriesData } from "@/lib/jobs-trends";
+import { QUERYING_DISABLED } from "@/lib/maintenance";
+import { JobsStackedBars, useChartWindow } from "./JobsStackedBars";
 import { JobsCompareChips } from "./JobsCompareChips";
 import { JobsComments } from "./JobsComments";
 import { useJobSeries } from "./useJobSeries";
-import { useJobComments } from "./useJobComments";
+import { useJobsDrill } from "./useJobsDrill";
 
-export function JobsLandingChart({ initialTerms }: { initialTerms: string[] }) {
+export function JobsLandingChart({
+  initialTerms,
+  initialSeries,
+  renderedAt,
+}: {
+  initialTerms: string[];
+  initialSeries?: SeriesData[];
+  /** server render time; anchors the in-progress month so hydration matches. */
+  renderedAt?: number;
+}) {
   const [terms, setTerms] = useState<string[]>(initialTerms);
-  const [windowKey, setWindowKey] = useState<WindowKey>("all");
+  const [windowKey, setWindowKey] = useChartWindow();
   // Landing pages open on raw COUNTS, not share-of-voice: a single-skill page is
   // always a flat 100% band in share mode, and even a 2-way comparison reads more
   // honestly as counts here (the user can still flip to share% when there are 2+
   // terms). A single term hides the toggle entirely (`hideShareToggle` below).
-  const isSingle = terms.length <= 1;
   const [normalized, setNormalized] = useState(false);
 
-  const { series, loading } = useJobSeries(terms);
-  const { state: commentsState, load: loadComments, loadMore: loadMoreComments } =
-    useJobComments();
-
-  // Guard the one-time prefetch of the seed comparison's drill-down, and never
-  // yank a posting the user is actively reading.
-  const userDrilled = useRef(false);
-  const prefetched = useRef(false);
-
-  const totalByLabel = useMemo(() => {
-    const m = new Map<string, number>();
-    for (const s of series) m.set(s.label, s.total);
-    return m;
-  }, [series]);
-
-  const drill = useCallback(
-    (hit: SegmentHit) => {
-      userDrilled.current = true;
-      loadComments({
-        label: hit.series.label,
-        color: hit.series.color,
-        fromMs: hit.fromMs,
-        toMs: hit.toMs,
-        year: hit.year,
-        month: hit.month,
-      });
-    },
-    [loadComments],
-  );
-
-  // Prefetch this page's comparison drill-down once the series resolve, so the
-  // panel is never empty for a crawler-visible page (and matches the hub's UX).
-  useEffect(() => {
-    if (prefetched.current || userDrilled.current) return;
-    if (loading) return;
-    const seg = defaultDrillSegment(series);
-    if (!seg) return;
-    prefetched.current = true;
-    const s = series[seg.seriesIndex];
-    loadComments({
-      label: s.label,
-      color: s.color,
-      fromMs: seg.fromMs,
-      toMs: seg.toMs,
-      year: seg.year,
-      month: seg.month,
-    });
-  }, [loading, series, loadComments]);
+  const { series, loading, error, retry } = useJobSeries(terms, initialSeries);
+  const isSingle = series.length <= 1;
+  const termsKey = series.map((s) => s.label).join("§");
+  const drill = useJobsDrill(series, loading, termsKey);
 
   return (
     <div>
@@ -91,7 +55,7 @@ export function JobsLandingChart({ initialTerms }: { initialTerms: string[] }) {
       <JobsCompareChips
         terms={terms}
         setTerms={setTerms}
-        totalFor={(t) => totalByLabel.get(t)}
+        totalAt={(i) => series[i]?.total}
       />
 
       <div className="pt-3">
@@ -102,15 +66,24 @@ export function JobsLandingChart({ initialTerms }: { initialTerms: string[] }) {
           normalized={isSingle ? false : normalized}
           onToggleNormalized={setNormalized}
           hideShareToggle={isSingle}
-          onHover={drill}
-          onSelect={drill}
+          onHover={drill.onHover}
+          onSelect={drill.onSelect}
+          selected={drill.latched}
           loading={loading}
+          error={error}
+          onRetry={retry}
+          nowMs={renderedAt}
         />
       </div>
 
       {/* Reserve the drill-down height so hydration causes no layout shift. */}
       <div className="pt-4 min-h-[240px]">
-        <JobsComments state={commentsState} onLoadMore={loadMoreComments} />
+        <JobsComments
+          state={drill.comments}
+          onLoadMore={drill.loadMore}
+          onRetry={drill.retry}
+          disabled={QUERYING_DISABLED}
+        />
       </div>
     </div>
   );

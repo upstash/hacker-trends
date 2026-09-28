@@ -7,11 +7,10 @@
  * all string-escaped) dominates the payload bytes, exactly as it did for the
  * main page (see examples-wire.ts).
  *
- * Unlike the main page, the jobs mini charts re-bin into TRUE calendar months
- * (`binMonths` in jobs-trends.ts keys off `getUTCMonth()`, not the 30d slot
- * grid). So we cannot collapse to the 30d `slotOf` grid - that would drift a
- * bucket into the wrong calendar month. Instead we fold each part's points into
- * calendar months here and transmit a flat `[globalMonthIndex, count, ...]`
+ * Unlike the main page, the jobs mini charts plot TRUE calendar months (the
+ * `hnjobs` aggregate returns one bucket per calendar month). So we cannot
+ * collapse to the 30d `slotOf` grid - that would drift a month into the wrong
+ * slot. Instead we fold each part's points into calendar months here and transmit a flat `[globalMonthIndex, count, ...]`
  * array per part (a global month index is `year*12 + monthIndex`, a small
  * integer, no property names). On arrival each pair is rebuilt as a single
  * `{ key, docCount }` whose `key` is that month's 1st-of-month UTC epoch - which

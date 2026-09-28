@@ -32,19 +32,23 @@ export function JobsLandingHeader({ crumb }: { crumb?: string }) {
 
 /**
  * A big, hard-to-miss call-to-action that drops the reader into the interactive
- * `/who-is-hiring` search tool. The landing pages are mostly read-only SEO copy,
+ * `/who-is-hiring` search tool, seeded with this page's `terms` (`?q=a&q=b`, the
+ * hub's shareable URL state). The landing pages are mostly read-only SEO copy,
  * so this is the clear "go play with it yourself" affordance - a real button,
  * not a faint header link.
  */
 export function JobsToolCta({
   label = "Search & compare any skill in the Who Is Hiring? tool",
+  terms = [],
 }: {
   label?: string;
+  terms?: string[];
 }) {
+  const qs = new URLSearchParams(terms.map((t) => ["q", t])).toString();
   return (
     <div className="px-3 pt-4">
       <Link
-        href="/who-is-hiring"
+        href={qs ? `/who-is-hiring?${qs}` : "/who-is-hiring"}
         className="inline-flex items-center gap-2 rounded bg-[color:var(--hn-orange)] px-4 py-2.5 text-[13px] font-bold text-white shadow-sm hover:brightness-95"
       >
         {label}

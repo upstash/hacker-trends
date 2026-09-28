@@ -15,6 +15,8 @@
  *   - the dock-magnification falloff factor(d): factor(0) is the max,
  *     factor(>=radius)===1, monotonic non-increasing in |d|
  *   - the drill-down ranking key relevance + log(1 + replyCount)
+ *   - the `hnjobs` calendar-month `$range` buckets and the partial current month
+ *   - chip normalization (colors/slots) and whole-word highlighting
  */
 export {};
 
@@ -32,12 +34,15 @@ import {
   columnPercents,
   factor,
   rankKey,
-  rankByDiscussion,
   defaultDrillSegment,
+  seriesSlots,
+  termRegex,
+  centeredSnippet,
   FIRST_YEAR,
   type RawBucket,
   type SeriesData,
 } from "../src/lib/jobs-trends";
+import { jobsMonthRanges, mapAggregations } from "../src/lib/hn-query";
 
 /* ---------- tiny assertion harness --------------------------------- */
 
@@ -243,7 +248,7 @@ console.log("\nfactor(d) (raised-cosine dock magnification)");
   check("radius <= 0 is a no-op (factor 1)", factor(0, boost, 0) === 1);
 }
 
-/* ---------- rankKey / rankByDiscussion: drill-down ranking --------- */
+/* ---------- rankKey: drill-down ranking --------------------------- */
 
 console.log("\nranking (relevance + log(1 + replyCount))");
 {
@@ -254,18 +259,68 @@ console.log("\nranking (relevance + log(1 + replyCount))");
   // a quiet but very relevant posting can still beat a chatty weak one.
   check("relevance still dominates a large gap",
     rankKey(20, 0) > rankKey(1, 1000));
-  // ordering of a fixed candidate set.
-  const docs = [
-    { id: "a", relevance: 5, replyCount: 0 }, //  5.000
-    { id: "b", relevance: 4, replyCount: 50 }, // 4 + log(51) ~= 7.93
-    { id: "c", relevance: 5, replyCount: 4 }, //  5 + log(5)  ~= 6.61
-    { id: "d", relevance: 1, replyCount: 0 }, //  1.000
-  ];
-  const order = rankByDiscussion(docs).map((d) => d.id).join("");
-  check("ranks a fixed set by relevance + log(1+replies)", order === "bcad",
-    `got ${order}`);
-  check("rankByDiscussion does not mutate the input",
-    docs[0].id === "a" && docs[3].id === "d");
+}
+
+/* ---------- hnjobs calendar-month ranges ---------------------------- */
+
+console.log("\nhnjobs month ranges ($range, calendar months)");
+{
+  const NS = 1e6;
+  const r = jobsMonthRanges(Date.UTC(2026, 8, 29));
+  check("starts Jan 2011", r[0].from === Date.UTC(2011, 0, 1) * NS);
+  check("ends with the current month",
+    r[r.length - 1].from === Date.UTC(2026, 8, 1) * NS &&
+      r[r.length - 1].to === Date.UTC(2026, 9, 1) * NS);
+  let contiguous = true;
+  for (let i = 1; i < r.length; i++) if (r[i].from !== r[i - 1].to) contiguous = false;
+  check("ranges are contiguous [from, to)", contiguous);
+  // The engine answers with the requested bounds (ns) plus open-ended edges.
+  const agg = mapAggregations({
+    by_month: {
+      buckets: [
+        { key: "*-x", to: r[0].from, docCount: 0 },
+        { key: "a", from: Date.UTC(2011, 3, 1) * NS, to: Date.UTC(2011, 4, 1) * NS, docCount: 36 },
+        { key: "b", from: Date.UTC(2011, 4, 1) * NS, to: Date.UTC(2011, 5, 1) * NS, docCount: 0 },
+        { key: "x-*", from: r[r.length - 1].to, docCount: 0 },
+      ],
+    },
+  });
+  check("range buckets map to 1st-of-month ms keys, empties + edges dropped",
+    agg.buckets.length === 1 && agg.buckets[0].key === Date.UTC(2011, 3, 1) &&
+      agg.buckets[0].docCount === 36,
+    JSON.stringify(agg.buckets));
+  const binned = binMonths(agg.buckets);
+  check("an April-thread bucket bins to April", binned.get("2011-3") === 36);
+}
+
+/* ---------- partial current month ----------------------------------- */
+
+console.log("\npartial current month");
+{
+  const py = series("python", "#1", { "2026-7": 10, "2026-8": 3 });
+  const cols = buildColumns([py], "1y", false, Date.UTC(2026, 8, 10));
+  check("only the current month is partial",
+    cols[cols.length - 1].partial && cols.filter((c) => c.partial).length === 1);
+  const past = buildColumns([py], "1y", false, Date.UTC(2026, 10, 10));
+  check("a past month is never partial", past.every((c) => !c.partial));
+}
+
+/* ---------- chip slots + whole-word highlight ----------------------- */
+
+console.log("\nchip slots + highlight");
+{
+  const { series: s, slotOf } = seriesSlots(["Python", "", "python ", "Go | Rust"]);
+  check("normalizes, drops empty + duplicate chips",
+    JSON.stringify(s) === JSON.stringify(["python", "go|rust"]));
+  check("chip -> series slot keeps colors aligned",
+    JSON.stringify(slotOf) === JSON.stringify([0, null, null, 1]));
+  const hl = (t: string, q: string) => t.replace(termRegex(q)!, "[$1]");
+  check("java does not match inside javascript",
+    hl("JavaScript and Java", "java") === "JavaScript and [Java]");
+  check("rust does not match inside trust", hl("trust rust", "rust") === "trust [rust]");
+  check("c++ matches as a word", hl("C++ devs", "c++") === "[C++] devs");
+  const text = `${"lorem ".repeat(80)}we write Rust daily ${"ipsum ".repeat(80)}`;
+  check("snippet is centered on the match", centeredSnippet(text, "rust", 120).includes("Rust"));
 }
 
 /* ---------- defaultDrillSegment: prefetch-on-load pick ------------- */

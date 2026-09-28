@@ -10,9 +10,9 @@
  * any "category" card with <=3 terms is DEMOTED into Popular comparisons, so a
  * "Top N" list is always a real list.
  *
- * Every card is a `JobsMiniCard` (lazy live data with a CDN-cached dataset
- * fast-path). All cards share ONE dataset fetch via `useJobsGallery`, so the
- * gallery doesn't fan out an aggregate per term on load. Clicking a card calls
+ * Every card is a `JobsMiniCard` drawn from the CDN-cached dataset. All cards
+ * share ONE dataset fetch via `useJobsGallery` and never aggregate live, so the
+ * gallery can't fan out an aggregate per term. Clicking a card calls
  * `onPick`, which the page wires to swap the big chart's comparison.
  */
 

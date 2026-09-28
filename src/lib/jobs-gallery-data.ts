@@ -2,24 +2,21 @@
  * Server-side data layer for the "Who is hiring?" gallery mini charts.
  *
  * Each gallery card (CATEGORY_CARDS / COMPARISONS in jobs-gallery.ts) is a
- * relative stacked-bar mini chart over LIVE jobs-scoped aggregates. Computing
- * those in the browser means every visible card fans out one aggregate call per
- * term - dozens of cold `/api/hn` round trips before anything paints. The main
- * page solves the identical problem with `/examples.json`; this mirrors that
- * pattern for the jobs gallery.
+ * relative stacked-bar mini chart over jobs-scoped monthly counts. Computing
+ * those per request would fan out one aggregate per distinct part (~105), so
+ * the whole set is precomputed OUT OF BAND and stored under a single Redis key:
  *
- * Strategy (same as examples-data.ts):
  *   1. Collect every DISTINCT part across all cards (an OR-group `a|b` is split
  *      into `a` and `b`; the same part used by several cards is fetched once).
- *   2. Aggregate each part ONCE, scope=jobs, into its 30d `$dateHistogram`.
- *   3. Cache the whole map under a SINGLE Redis key (`jobs-gallery:<version>`),
- *      so steady-state every request is a single GET instead of ~120 aggregates.
+ *   2. Aggregate each part ONCE into its calendar-month histogram.
+ *   3. Encode the compact wire form and SET it under `jobs-gallery-wire:<version>`.
  *
- * Writing the cache needs a writable token; the deployed app uses a READ-ONLY
- * token, so the SET is best-effort (it silently no-ops in prod). The route that
- * serves this (`/who-is-hiring/examples.json`) is CDN-cached on top, so prod
- * mostly serves the edge copy and rarely touches Redis at all. If the key is
- * missing we still compute + return live, so the gallery never breaks.
+ * Steps 1-3 run ONLY in CI (`scripts/prime-jobs-gallery.ts`, daily Action). The
+ * deployed app never computes the gallery: it only GETs the primed key
+ * (`readJobsGalleryWire`, memoized per instance) and, on a miss, callers degrade
+ * (the examples.json route serves its snapshot, landing pages read just their
+ * own parts). Note the app's Upstash token IS writable; "read-only" here is a
+ * rule of this module, not a property of the token.
  *
  * Server-only: it reads the Upstash token. Import from route handlers / server
  * components, never from a "use client" file. The browser consumes the compact
@@ -31,6 +28,7 @@ import { drillIndex } from "@/lib/jobs-index";
 import { GALLERY } from "@/lib/jobs-gallery";
 import { parseParts } from "@/lib/jobs-trends";
 import {
+  decodeJobsGalleryWire,
   encodeJobsGalleryWire,
   type JobsGalleryWire,
 } from "@/lib/jobs-gallery-wire";
@@ -38,25 +36,30 @@ import {
 /** Lean monthly point - the only thing the mini charts plot. */
 export type MonthCount = { key: number; docCount: number };
 
-/** Bump when the gallery selection or the index changes so a stale cache value
- *  is ignored. Tied to the gallery card count so re-running discovery (which
- *  rewrites jobs-gallery.ts) naturally invalidates the cache, AND to the index
- *  the histograms are computed against - flipping NEXT_PUBLIC_JOBS_INDEX_READY
- *  recomputes against `hnjobs` instead of reusing the `hn`+scope values. */
-export const JOBS_GALLERY_VERSION = `v2-${GALLERY.length}-${drillIndex().index}`;
+/** Bump when the gallery selection, the index or the bucketing changes so a
+ *  stale cache value is ignored. Tied to the gallery card count so re-running
+ *  discovery (which rewrites jobs-gallery.ts) naturally invalidates the cache,
+ *  AND to the index the histograms are computed against. v3: `hnjobs` counts are
+ *  exact calendar months (`$range`), not 30d buckets. A new version must be
+ *  primed by CI (`bun scripts/prime-jobs-gallery.ts`) before the gallery fills. */
+export const JOBS_GALLERY_VERSION = `v3-${GALLERY.length}-${drillIndex().index}`;
 
 const HAS_CREDS = !!(
   process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN
 );
 
-const CACHE_KEY = `jobs-gallery:${JOBS_GALLERY_VERSION}`;
 // The already-encoded WIRE form (the exact bytes the /who-is-hiring/examples.json
-// route serves). CI (`buildJobsGalleryWire`) writes it; the deployed route only
-// reads it (one Redis GET, no aggregates, no encode). Keyed separately from the
-// raw-data cache so a wire-format change can be invalidated independently.
+// route serves). CI (`buildJobsGalleryWire`) writes it; the deployed app only
+// reads it (one Redis GET, no aggregates, no encode).
 const WIRE_CACHE_KEY = `jobs-gallery-wire:${JOBS_GALLERY_VERSION}`;
 const CACHE_TTL_SECONDS = 60 * 60 * 24 * 30; // 30 days
 const BUILD_CONCURRENCY = 8;
+
+// Per-instance memo of the wire read, so a landing page render (several parts,
+// plus the remote-share stat) and the JSON route share one GET. A miss is kept
+// briefly so a cold key can't turn every render into a Redis round trip.
+const WIRE_HIT_TTL_MS = 10 * 60_000;
+const WIRE_MISS_TTL_MS = 60_000;
 
 export type JobsGalleryData = {
   version: string;
@@ -77,25 +80,62 @@ export function allGalleryParts(): string[] {
   return [...seen];
 }
 
-/** The SDK client (env-driven). All Upstash access - the per-part jobs
- *  aggregates AND the single cache key GET/SET - goes through it; everything is
- *  best-effort (a missing-creds or read-only-token failure degrades to live
- *  compute, never a crash), so callers treat the cache as strictly an
- *  optimization. */
 const redis = HAS_CREDS ? hnRedis() : null;
 
+/* ---------- app path: read-only ------------------------------------- */
+
+let wireMemo: { at: number; ttl: number; value: Promise<JobsGalleryWire | null> } | null = null;
+
+async function fetchWire(): Promise<JobsGalleryWire | null> {
+  if (!redis) return null;
+  try {
+    const cached = await redis.get<JobsGalleryWire | string>(WIRE_CACHE_KEY);
+    const w =
+      typeof cached === "string"
+        ? (JSON.parse(cached) as JobsGalleryWire)
+        : cached;
+    if (w?.version === JOBS_GALLERY_VERSION && w.terms) return w;
+  } catch {
+    // missing / corrupt / legacy value -> caller degrades
+  }
+  return null;
+}
+
+/**
+ * READ-ONLY fetch of the gallery wire payload from Redis - the ONLY gallery
+ * access the deployed app does. A single KV GET of `jobs-gallery-wire:<version>`,
+ * memoized per instance; it NEVER computes histograms. Returns `null` on a miss,
+ * a stale-version value, or any error. The KV read does not touch the search
+ * index, so it stays healthy even when live querying is disabled.
+ */
+export function readJobsGalleryWire(): Promise<JobsGalleryWire | null> {
+  const now = Date.now();
+  if (wireMemo && now - wireMemo.at < wireMemo.ttl) return wireMemo.value;
+  const memo = { at: now, ttl: WIRE_HIT_TTL_MS, value: fetchWire() };
+  memo.value.then((w) => {
+    if (!w) memo.ttl = WIRE_MISS_TTL_MS;
+  });
+  wireMemo = memo;
+  return memo.value;
+}
+
+/** The decoded per-part histograms from the primed wire key, or null on a miss.
+ *  Points are keyed at the 1st of each calendar month (exact round trip). */
+export async function readJobsGalleryParts(): Promise<Record<string, MonthCount[]> | null> {
+  const wire = await readJobsGalleryWire();
+  return wire ? decodeJobsGalleryWire(wire) : null;
+}
+
+/* ---------- CI path: compute + write --------------------------------- */
+
 /** One part's monthly histogram, via the exact same SDK aggregate the page runs
- *  in the browser: the dedicated `hnjobs` index when ready (no scope arm), else
- *  the shared `hn` index scope=jobs, stripped to the lean {key, docCount}
- *  points. */
+ *  in the browser (the `hnjobs` calendar-month ranges when ready, else the
+ *  shared `hn` index scope=jobs), stripped to lean {key, docCount} points. */
 async function fetchBuckets(part: string): Promise<MonthCount[]> {
   if (!redis) return [];
   const { index, scope } = drillIndex();
-  // Retry transient failures: a single flaky aggregate here used to return `[]`,
-  // which `compute` would then cache as a permanent zero for the part's 30-day
-  // TTL - exactly the bug that left "javascript vs typescript" rendering as one
-  // solid bar (js cached empty). Every gallery part is curated to have data, so
-  // an empty result is always a failure signal, never a real zero.
+  // Retry transient failures: every gallery part is curated to have data, so an
+  // empty result is a failure signal, never a real zero.
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
       const agg = await runAggregate(redis, { q: part, scope, index });
@@ -124,16 +164,20 @@ async function mapLimit<T, R>(
   return out;
 }
 
-async function compute(): Promise<{ data: JobsGalleryData; complete: boolean }> {
+/**
+ * CI/scripts ONLY: aggregate every gallery part live (~105 aggregates). Never
+ * call from the app. A part that came back empty is OMITTED (not stored as
+ * `[]`), and `complete` is false so the caller skips caching the partial build.
+ */
+export async function computeJobsGalleryData(): Promise<{
+  data: JobsGalleryData;
+  complete: boolean;
+}> {
   const parts = allGalleryParts();
   const buckets = await mapLimit(parts, BUILD_CONCURRENCY, fetchBuckets);
   const map: Record<string, MonthCount[]> = {};
   let complete = true;
   parts.forEach((p, i) => {
-    // OMIT a part that came back empty rather than storing `[]`: the client's
-    // `lookupPart` then returns undefined, so the card falls back to a live
-    // per-card aggregate (which renders correctly) instead of drawing a false
-    // zero. `complete` stays false so this partial build is NOT cached.
     if (buckets[i].length > 0) map[p] = buckets[i];
     else complete = false;
   });
@@ -148,86 +192,18 @@ async function compute(): Promise<{ data: JobsGalleryData; complete: boolean }> 
 }
 
 /**
- * The gallery's per-part histograms. Reads the single cache key; on a miss (or
- * `fresh`) recomputes all histograms and best-effort-writes the cache. Always
- * returns data - the cache is an optimization, never a hard dependency.
- */
-export async function getJobsGalleryData(opts?: {
-  fresh?: boolean;
-}): Promise<JobsGalleryData> {
-  if (!opts?.fresh && redis) {
-    try {
-      // The SDK auto-deserializes JSON values; handle both the parsed object and
-      // a raw string (in case it was stored stringified).
-      const cached = await redis.get<JobsGalleryData | string>(CACHE_KEY);
-      const d =
-        typeof cached === "string"
-          ? (JSON.parse(cached) as JobsGalleryData)
-          : cached;
-      if (d?.version === JOBS_GALLERY_VERSION && d.terms) return d;
-    } catch {
-      // fall through to recompute on a missing/corrupt/legacy value
-    }
-  }
-  const { data, complete } = await compute();
-  // Only persist a COMPLETE build. Caching a partial one (some part still empty
-  // after retries) would freeze that gap for the 30-day TTL; skipping the write
-  // lets the next request recompute and self-heal, while this response still
-  // serves every part that did resolve (the rest fall back to live per card).
-  if (redis && complete) {
-    try {
-      await redis.set(CACHE_KEY, JSON.stringify(data), { ex: CACHE_TTL_SECONDS });
-    } catch {
-      // ignore: cache is an optimization, never a hard dependency
-    }
-  }
-  return data;
-}
-
-/**
- * READ-ONLY fetch of the gallery wire payload from Redis - the ONLY gallery
- * access the deployed app does. It is a single KV GET against the
- * `jobs-gallery-wire:<version>` key and NEVER computes histograms (no ~120
- * aggregate fan-out): that build is owned entirely by CI (`buildJobsGalleryWire`
- * run from the GitHub Action). Returns `null` on a miss, a stale-version value,
- * or any error, so the caller falls back to the in-repo snapshot. The KV read
- * does not depend on the search index, so it stays healthy even when live
- * querying is disabled.
- */
-export async function readJobsGalleryWire(): Promise<JobsGalleryWire | null> {
-  if (!redis) return null;
-  try {
-    const cached = await redis.get<JobsGalleryWire | string>(WIRE_CACHE_KEY);
-    const w =
-      typeof cached === "string"
-        ? (JSON.parse(cached) as JobsGalleryWire)
-        : cached;
-    if (w?.version === JOBS_GALLERY_VERSION && w.terms) return w;
-  } catch {
-    // missing / corrupt / legacy value -> caller serves the snapshot
-  }
-  return null;
-}
-
-/**
  * CI-ONLY builder: recompute the gallery histograms from the live index and
- * write BOTH the raw-data key (via `getJobsGalleryData({fresh:true})`) and the
- * encoded wire key. Needs a WRITABLE Upstash token, so it is invoked from the
- * GitHub Action (next to the daily ingest), never from the deployed app. The
- * wire key is only written when the build is COMPLETE (every curated part
- * resolved); a partial build is skipped so a transient gap never freezes for the
- * 30-day TTL. Returns the freshly built wire (and whether it was persisted).
+ * write the encoded wire key, only when the build is COMPLETE (every curated
+ * part resolved) so a transient gap never freezes for the 30-day TTL. Invoked
+ * from the GitHub Action via scripts/prime-jobs-gallery.ts, never from the app.
  */
 export async function buildJobsGalleryWire(): Promise<{
   wire: JobsGalleryWire;
   cached: boolean;
 }> {
   if (!redis) throw new Error("buildJobsGalleryWire: no Upstash credentials");
-  const data = await getJobsGalleryData({ fresh: true });
+  const { data, complete } = await computeJobsGalleryData();
   const wire = encodeJobsGalleryWire(data);
-  const complete = allGalleryParts().every(
-    (p) => (data.terms[p]?.length ?? 0) > 0,
-  );
   if (complete) {
     await redis.set(WIRE_CACHE_KEY, JSON.stringify(wire), {
       ex: CACHE_TTL_SECONDS,
