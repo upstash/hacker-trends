@@ -310,7 +310,14 @@ async function fillMiss<T>(
     }
     token = lock.token;
   }
+  // The budget caps query STARTS; this caps queries RUNNING on this instance,
+  // so slow cold aggregates can't pile up past what the DB can serve. Checked
+  // before taking a global token, so a full instance can't burn the budget.
+  let slot = false;
   try {
+    if (liveQueries >= MAX_LIVE_QUERIES) throw busy(1);
+    liveQueries++;
+    slot = true;
     if (shared) {
       // Re-check (the previous holder may have cached it just before we got
       // the lock) while taking a global token; a rare hit wastes one token.
@@ -330,19 +337,11 @@ async function fillMiss<T>(
         if (!budget.success) throw busy(budget.retryAfter);
       }
     }
-    // The budget caps query STARTS; this caps queries RUNNING on this instance,
-    // so slow cold aggregates can't pile up past what the DB can serve.
-    if (liveQueries >= MAX_LIVE_QUERIES) throw busy(1);
-    liveQueries++;
-    let result: T;
-    try {
-      result = await compute();
-    } finally {
-      liveQueries--;
-    }
+    const result = await compute();
     await cacheSet(key, result, ttlS);
     return result;
   } finally {
+    if (slot) liveQueries--;
     await releaseLock(lockKey, token);
   }
 }

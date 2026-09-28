@@ -152,8 +152,6 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
   const [live, setLive] = useState<Record<string, ChartBucket[]>>({});
   const [aggErrs, setAggErrs] = useState<Record<string, unknown>>({});
   const commitTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  // Auto-retries spent per term (see the chart-data effect).
-  const retries = useRef(new Map<string, number>());
   const commit = useCallback((next: Q[], delay = 0) => {
     clearTimeout(commitTimer.current);
     const apply = () => {
@@ -293,29 +291,22 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
       if (GALLERY_TERMS.has(t) && !galleryReady) continue;
       inflight.current.add(t);
       // No abort: the server runs the query regardless, so keep the result.
-      aggregate({ q: t })
-        .then((r) => setLive((m) => ({ ...m, [t]: r.buckets })))
-        .catch((e) => {
-          setAggErrs((m) => ({ ...m, [t]: e }));
-          // Busy / rate-limited / upstream blips are transient: drop the error
-          // after a backoff so this effect retries, a few times per term.
-          const n = retries.current.get(t) ?? 0;
-          const transient = !(e instanceof ApiError) || e.code !== "bad_request";
-          if (transient && n < MAX_AGG_RETRIES) {
-            retries.current.set(t, n + 1);
-            setTimeout(
-              () =>
-                setAggErrs((m) => {
-                  if (!(t in m)) return m;
-                  const rest = { ...m };
-                  delete rest[t];
-                  return rest;
-                }),
-              2000 * 2 ** n + Math.random() * 1000,
-            );
-          }
-        })
-        .finally(() => inflight.current.delete(t));
+      // Busy / rate-limited answers are load shedding, so re-ask a few times
+      // with backoff. The error (and any stale gallery fallback) stays on
+      // screen meanwhile; a success replaces it via `live`.
+      const run = (n: number): Promise<void> =>
+        aggregate({ q: t })
+          .then((r) => setLive((m) => ({ ...m, [t]: r.buckets })))
+          .catch((e) => {
+            setAggErrs((m) => ({ ...m, [t]: e }));
+            const shed = e instanceof ApiError && (e.code === "busy" || e.code === "rate_limited");
+            if (shed && n < MAX_AGG_RETRIES) {
+              return new Promise<void>((r) => setTimeout(r, 2000 * 2 ** n + Math.random() * 1000)).then(
+                () => run(n + 1),
+              );
+            }
+          });
+      run(0).finally(() => inflight.current.delete(t));
     }
   }, [chartKey, dataFor, galleryReady, aggErrs]);
 

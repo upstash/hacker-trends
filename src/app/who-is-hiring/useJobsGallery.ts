@@ -42,6 +42,10 @@ export type GalleryDataset = {
 
 /** The decoded dataset once it has resolved (null = fetched but unavailable). */
 let cachedTerms: Record<string, MonthCount[]> | null = null;
+/** Whether the dataset was primed recently enough to stand in for live data. */
+let cachedFresh = false;
+// The daily prime runs ~00:30 UTC; past this age the current month is stale.
+const FRESH_MS = 36 * 3600 * 1000;
 /** Set once the shared fetch has settled, so a remount can skip straight to
  *  ready with the cached value instead of re-fetching. */
 let settled = false;
@@ -61,6 +65,8 @@ function loadGalleryDataset(): Promise<void> {
       cachedTerms = wire.terms && Object.keys(wire.terms).length > 0
         ? decodeJobsGalleryWire(wire)
         : null;
+      const at = wire.generatedAt ? Date.parse(wire.generatedAt) : NaN;
+      cachedFresh = Date.now() - at < FRESH_MS;
     } catch {
       // Leave cachedTerms null; cards render flat.
       cachedTerms = null;
@@ -72,11 +78,13 @@ function loadGalleryDataset(): Promise<void> {
 }
 
 /** One part's primed histogram from the shared gallery dataset (fetched once
- *  per session), or undefined when the dataset or the part is unavailable. The
+ *  per session), or undefined when the dataset or the part is unavailable, or
+ *  the dataset is too old for its current month to be trusted. The
  *  big chart tries this before a live aggregate: the default comparisons are
  *  all gallery parts, so they cost no Search queries at all. */
 export async function galleryPart(part: string): Promise<MonthCount[] | undefined> {
   await loadGalleryDataset();
+  if (!cachedFresh) return undefined;
   const pts = cachedTerms?.[part];
   return pts && pts.length ? pts : undefined;
 }

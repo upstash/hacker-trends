@@ -26,6 +26,8 @@ export type MonthCount = { key: number; docCount: number };
 
 export type JobsGalleryWire = {
   version: string;
+  /** When the primed build ran (ISO). Absent on older keys and the snapshot. */
+  generatedAt?: string;
   /** part -> flat [monthIdx0, count0, monthIdx1, count1, ...] (calendar months) */
   terms: Record<string, number[]>;
 };
@@ -35,6 +37,7 @@ export type JobsGalleryWire = {
  *  ascending index order (deterministic payload, friendlier to gzip). */
 export function encodeJobsGalleryWire(data: {
   version: string;
+  generatedAt?: string;
   terms: Record<string, MonthCount[]>;
 }): JobsGalleryWire {
   const terms: Record<string, number[]> = {};
@@ -53,7 +56,7 @@ export function encodeJobsGalleryWire(data: {
     }
     terms[part] = flat;
   }
-  return { version: data.version, terms };
+  return { version: data.version, generatedAt: data.generatedAt, terms };
 }
 
 /** Client-side: rebuild the `{ key, docCount }[]` points every consumer expects.
