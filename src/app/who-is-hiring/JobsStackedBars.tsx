@@ -120,6 +120,9 @@ type Props = {
   /** friendly message when some or all series failed to load. */
   error?: string | null;
   onRetry?: () => void;
+  /** the "now" that decides which month is in progress. A server-rendered chart
+   *  passes its render time so the client hydrates the same pale month. */
+  nowMs?: number;
   height?: number;
 };
 
@@ -137,6 +140,7 @@ function JobsStackedBarsInner({
   loading,
   error,
   onRetry,
+  nowMs,
   height = 380,
 }: Props) {
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -149,8 +153,8 @@ function JobsStackedBarsInner({
   // Bin once per (series, window, mode) change. In SHARE % mode we drop empty
   // months so the axis compacts past them; COUNT keeps every month.
   const columns = useMemo(
-    () => buildColumns(series, windowKey, normalized),
-    [series, windowKey, normalized],
+    () => buildColumns(series, windowKey, normalized, nowMs),
+    [series, windowKey, normalized, nowMs],
   );
   const maxTotal = useMemo(
     () => Math.max(1, ...columns.map((c) => c.total)),

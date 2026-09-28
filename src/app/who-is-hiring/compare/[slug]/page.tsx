@@ -91,7 +91,7 @@ export default async function WhoIsHiringComparePage({
   const vs = labels.join(" vs ");
 
   // All page data, server-side, at render/revalidate time.
-  const { series, perSeries } = await getJobsComparisonLanding(terms, 3);
+  const { series, perSeries, renderedAt } = await getJobsComparisonLanding(terms, 3);
 
   // Cross-links to a few other comparison stories (skip this one).
   const otherComparisons = COMPARISONS.filter(
@@ -144,7 +144,7 @@ export default async function WhoIsHiringComparePage({
           this comparison. Opens on raw counts; flip to share % to see each
           side's slice, narrow the window, or click a month for the postings. */}
       <div className="px-3 pt-3">
-        <JobsLandingChart initialTerms={terms} initialSeries={series} />
+        <JobsLandingChart initialTerms={terms} initialSeries={series} renderedAt={renderedAt} />
         <p className="text-[11px] text-[color:var(--hn-subtle)] mt-2 max-w-[760px] leading-relaxed">
           Each calendar month since 2011 as one bar. Switch to share % to stack
           the bands to 100% and see each side&rsquo;s slice of the Who is hiring?

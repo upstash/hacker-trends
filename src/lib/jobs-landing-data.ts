@@ -22,8 +22,8 @@
  *      parent thread id (for the `/archived/<id>` link) and a text snippet.
  *
  * When live querying is disabled (`isQueryingDisabled`) the live reads are
- * skipped, and any render that had to degrade (disabled, a read failed, the
- * wire key missed) shortens its own ISR lifetime so the full page comes back
+ * skipped, and any render that had to degrade (disabled, or a read failed)
+ * shortens its own ISR lifetime so the full page comes back
  * within minutes instead of a day.
  *
  * Server-only: it reads the Upstash token. Import from route handlers / server
@@ -105,7 +105,6 @@ async function partBuckets(part: string, ctx: Ctx): Promise<MonthCount[]> {
     // scope arm), else the shared `hn` index narrowed by `scope=jobs`.
     const { index, scope } = drillIndex();
     const agg = await runAggregate(redis!, { q: part, scope, index });
-    if (!gallery) ctx.degraded = true; // wire missing: retry sooner
     return agg.buckets.map((b) => ({ key: b.key, docCount: b.docCount }));
   } catch {
     ctx.degraded = true;
@@ -505,6 +504,8 @@ export type JobsTermLanding = {
   postings: JobsTermPostings;
   /** fraction of postings that also mention remote, or null. */
   remote: number | null;
+  /** when this render happened (epoch ms): the chart's "current month". */
+  renderedAt: number;
 };
 
 /** Everything the single-skill page needs, fetched in parallel. */
@@ -518,7 +519,7 @@ export async function getJobsTermLanding(term: string): Promise<JobsTermLanding>
   const stats = statsForSeries(series[0], latest);
   const postings = await termPostings(term, latest, ctx);
   await finish(ctx);
-  return { term, series, stats, postings, remote };
+  return { term, series, stats, postings, remote, renderedAt: Date.now() };
 }
 
 export type JobsComparisonSeries = {
@@ -532,6 +533,8 @@ export type JobsComparisonLanding = {
   terms: string[];
   series: SeriesData[];
   perSeries: JobsComparisonSeries[];
+  /** when this render happened (epoch ms): the chart's "current month". */
+  renderedAt: number;
 };
 
 /** Everything a comparison / category page needs: the binned series for the
@@ -551,5 +554,5 @@ export async function getJobsComparisonLanding(
     })),
   );
   await finish(ctx);
-  return { terms, series, perSeries };
+  return { terms, series, perSeries, renderedAt: Date.now() };
 }

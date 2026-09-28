@@ -14,15 +14,16 @@ import { MAX_SERIES } from "@/lib/jobs-trends";
 
 /** Resolve a slug to its ordered series list, or null (404). A curated gallery
  *  comparison keeps its OR-group series; any other slug is split on `-vs-` and
- *  must name 2..MAX_SERIES distinct landing terms (so random slugs can't mint
- *  new ISR pages). Curated-copy slugs are always allowed. */
+ *  must be the CANONICAL slug of 2..MAX_SERIES distinct landing terms (so case
+ *  or dash variants can't mint extra ISR pages). Curated-copy slugs are always
+ *  allowed. */
 export function termsForSlug(slug: string): string[] | null {
   const curated = COMPARISONS.find((c) => comparisonSlug(c.terms) === slug);
   if (curated) return curated.terms;
   const terms = [...new Set(slug.split("-vs-").map((p) => slugToTerm(p)).filter(Boolean))];
   if (terms.length < 2 || terms.length > MAX_SERIES) return null;
   if (hasCuratedJobsComparison(slug)) return terms;
-  return terms.every(isJobsLandingTerm) ? terms : null;
+  return terms.every(isJobsLandingTerm) && comparisonSlug(terms) === slug ? terms : null;
 }
 
 /** Display label for one series string: capitalized, with an OR-group collapsed

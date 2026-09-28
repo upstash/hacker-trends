@@ -1,3 +1,4 @@
+import { notFound } from "next/navigation";
 import { categoryCardBySlug } from "@/lib/jobs-seo";
 import { jobsOgImage, OG_CONTENT_TYPE, OG_SIZE } from "../../_seo/og";
 
@@ -8,8 +9,9 @@ export const contentType = OG_CONTENT_TYPE;
 export default async function Image({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
   const card = categoryCardBySlug(slug);
+  if (!card) notFound();
   return jobsOgImage(
-    card?.title ?? "Who is hiring?",
+    card.title,
     "Ranked by demand in Hacker News job postings",
   );
 }

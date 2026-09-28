@@ -22,18 +22,13 @@
 
 import type { Metadata } from "next";
 import Link from "next/link";
-import { notFound } from "next/navigation";
-import { abs, termToSlug, comparisonSlug, slugToTerm } from "@/lib/site";
-import {
-  jobsTermSeo,
-  hasCuratedJobsTerm,
-  jobsDisplayTerm,
-  isJobsLandingTerm,
-} from "@/lib/jobs-seo";
+import { notFound, permanentRedirect } from "next/navigation";
+import { abs, termToSlug, comparisonSlug } from "@/lib/site";
+import { jobsTermSeo, hasCuratedJobsTerm, jobsDisplayTerm } from "@/lib/jobs-seo";
 import { jobsSiblingTerms, jobsComparisonsForTerm } from "@/lib/jobs-gallery";
 import { getJobsTermLanding } from "@/lib/jobs-landing-data";
-import { normalizeSeries } from "@/lib/jobs-trends";
 import { jobsMetadata } from "../_seo/meta";
+import { termFor } from "./term";
 import { JobsPostingSample } from "../_seo/JobsPostingSample";
 import { JobsLandingChart } from "../JobsLandingChart";
 import {
@@ -55,12 +50,6 @@ export const dynamicParams = true;
 
 export function generateStaticParams() {
   return [];
-}
-
-/** The page's term for a slug, or null when no page exists for it. */
-function termFor(slug: string): string | null {
-  const term = normalizeSeries(slugToTerm(slug));
-  return term && isJobsLandingTerm(term) ? term : null;
 }
 
 export async function generateMetadata({
@@ -89,15 +78,19 @@ export default async function WhoIsHiringTermPage({
 }: {
   params: Promise<{ term: string }>;
 }) {
-  const term = termFor((await params).term);
+  const { term: slug } = await params;
+  const term = termFor(slug);
   if (!term) notFound();
+  // One cached page per term: variants ("PYTHON", "python-") redirect to the
+  // canonical slug instead of minting their own ISR entry (and queries).
+  if (termToSlug(term) !== slug) permanentRedirect(`/who-is-hiring/${termToSlug(term)}`);
 
   const seo = jobsTermSeo(term);
   const display = jobsDisplayTerm(term);
   const path = `/who-is-hiring/${termToSlug(term)}`;
 
   // All the page's data, server-side, at render/revalidate time.
-  const { series, stats, postings, remote } = await getJobsTermLanding(term);
+  const { series, stats, postings, remote, renderedAt } = await getJobsTermLanding(term);
 
   const siblings = jobsSiblingTerms(term, 8);
   const relatedComparisons = jobsComparisonsForTerm(term);
@@ -178,7 +171,7 @@ export default async function WhoIsHiringTermPage({
           a meaningless flat band with one term, so that toggle is hidden); add
           another skill via the chips to unlock the share-of-voice view. */}
       <div className="px-3 pt-5">
-        <JobsLandingChart initialTerms={[term]} initialSeries={series} />
+        <JobsLandingChart initialTerms={[term]} initialSeries={series} renderedAt={renderedAt} />
         <p className="text-[11px] text-[color:var(--hn-subtle)] mt-2 max-w-[760px] leading-relaxed">
           Monthly {display} job postings in the Hacker News Who is hiring? thread,
           one bar per calendar month since 2011. Narrow the window, add another

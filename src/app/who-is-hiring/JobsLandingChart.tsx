@@ -28,9 +28,12 @@ import { useJobsDrill } from "./useJobsDrill";
 export function JobsLandingChart({
   initialTerms,
   initialSeries,
+  renderedAt,
 }: {
   initialTerms: string[];
   initialSeries?: SeriesData[];
+  /** server render time; anchors the in-progress month so hydration matches. */
+  renderedAt?: number;
 }) {
   const [terms, setTerms] = useState<string[]>(initialTerms);
   const [windowKey, setWindowKey] = useChartWindow();
@@ -69,6 +72,7 @@ export function JobsLandingChart({
           loading={loading}
           error={error}
           onRetry={retry}
+          nowMs={renderedAt}
         />
       </div>
 

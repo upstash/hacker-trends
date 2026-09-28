@@ -79,7 +79,8 @@ export function WhoIsHiringSearch() {
       if (!isDefault) for (const q of next) sp.append("q", q);
       const qs = sp.toString();
       const url = `${window.location.pathname}${qs ? `?${qs}` : ""}${window.location.hash}`;
-      window.history.replaceState(window.history.state, "", url);
+      // `null` state (like the homepage) takes Next's synced replaceState path.
+      window.history.replaceState(null, "", url);
     }, URL_SYNC_MS);
     return () => clearTimeout(t);
   }, [picked]);
