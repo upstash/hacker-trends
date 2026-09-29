@@ -24,8 +24,6 @@
  *   LCP/INP/CLS/FCP/TTFB - Core Web Vitals samples (perf on real traffic).
  */
 
-import { ApiError } from "./hn-search";
-
 // gtag is defined by the inline snippet in app/layout.tsx.
 declare global {
   interface Window {
@@ -74,15 +72,18 @@ export function track<K extends keyof EventMap>(name: K, params: EventMap[K]) {
   window.gtag("event", name, clean);
 }
 
-/** Log a failed fetch as `load_error`. Aborts are the app cancelling a stale
- *  request, not a failure anyone saw, so they're skipped. */
+/** Log a failed fetch as `load_error`. Aborts (the app cancelling a stale
+ *  request) and the kill switch (`disabled`, which falls back to cached data)
+ *  aren't failures anyone saw, so they're skipped. Duck-typed on hn-search's
+ *  ApiError so this module stays import-free for the landing-page bundles. */
 export function trackError(
   scope: EventMap["load_error"]["scope"],
   e: unknown,
   attempt?: number,
 ) {
-  if ((e as { name?: string } | null)?.name === "AbortError") return;
-  const code = e instanceof ApiError ? e.code : "network";
+  const err = e as { name?: string; code?: string } | null;
+  if (err?.name === "AbortError" || err?.code === "disabled") return;
+  const code = err?.name === "ApiError" && err.code ? err.code : "network";
   track("load_error", attempt === undefined ? { scope, code } : { scope, code, attempt });
 }
 

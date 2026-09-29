@@ -123,13 +123,14 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
   useEffect(() => {
     const ctrl = new AbortController();
     fetch("/examples.json", { signal: ctrl.signal })
-      .then((r) => (r.ok ? r.json() : null))
+      .then((r) => {
+        if (r.ok) return r.json();
+        track("load_error", { scope: "gallery", code: `http_${r.status}` });
+        return null;
+      })
       .then((d: ExamplesWire | null) => {
         if (d?.terms) setExamplesData(d);
-        else {
-          setExamplesFailed(true);
-          track("load_error", { scope: "gallery", code: "empty" });
-        }
+        else setExamplesFailed(true);
       })
       .catch((e) => {
         // sparklines stay flat; catalog terms fall back to live aggregates
@@ -539,19 +540,19 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
       {/* Header bar -------------------------------------------------- */}
       <div className="hn-header flex items-center gap-2 px-2 py-[3px]">
         <span className="hn-logo">T</span>
-        <Link href="/" className="font-bold text-[12px]">
+        <Link href="/" className="font-bold text-[12px] whitespace-nowrap shrink-0">
           Hacker Trends
         </Link>
-        <span className="text-[10px] opacity-80 hidden sm:inline">
+        <span className="text-[10px] opacity-80 hidden sm:block min-w-0 truncate">
           | see how any topic, tool, or person trended across 18 years of
           Hacker News
         </span>
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex shrink-0 items-center gap-2">
           <a
             href={outboundUrl("https://upstash.com/docs/redis/search", "header")}
             target="_blank"
             rel="noopener"
-            className="hidden sm:inline-flex items-center gap-1 text-[11px] font-semibold whitespace-nowrap hover:underline"
+            className="hidden md:inline-flex items-center gap-1 text-[11px] font-semibold whitespace-nowrap hover:underline"
             onClick={() => trackOutbound("upstash", "header")}
           >
             <UpstashMark />

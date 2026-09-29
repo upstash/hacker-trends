@@ -59,6 +59,9 @@ export function WhoIsHiringSearch() {
   const [picked, setPicked] = useState<string[] | null>(null);
   // What made the latest pick, for the `jobs_search` event.
   const pickSource = useRef<"chips" | "gallery">("chips");
+  // The last comparison logged, so an edit that leaves the series unchanged
+  // (an empty chip, re-clicking the card on screen) isn't logged again.
+  const lastTracked = useRef<string | null>(null);
   const terms = picked ?? urlTerms ?? DEFAULT_TERMS;
   const [windowKey, setWindowKey] = useChartWindow();
   const [normalized, setNormalized] = useState(true);
@@ -83,6 +86,10 @@ export function WhoIsHiringSearch() {
       const url = `${window.location.pathname}${qs ? `?${qs}` : ""}${window.location.hash}`;
       // `null` state (like the homepage) takes Next's synced replaceState path.
       window.history.replaceState(null, "", url);
+      const key = next.join("|");
+      const prev = lastTracked.current ?? seriesSlots(urlTerms ?? DEFAULT_TERMS).series.join("|");
+      if (key === prev) return;
+      lastTracked.current = key;
       track("jobs_search", {
         terms: next.join(" vs "),
         term_count: next.length,
@@ -90,7 +97,7 @@ export function WhoIsHiringSearch() {
       });
     }, URL_SYNC_MS);
     return () => clearTimeout(t);
-  }, [picked]);
+  }, [picked, urlTerms]);
 
   /** Load a gallery card's terms into the big chart (a card click). The
    *  drill-down panel intentionally stays as-is until the user hovers the new
