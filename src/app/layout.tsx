@@ -99,6 +99,8 @@ const siteJsonLd = {
   ],
 };
 
+const PROD_HOST = new URL(SITE_URL).hostname;
+
 export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
@@ -111,25 +113,29 @@ export default function RootLayout({
         <meta property="og:logo" content={`${SITE_URL}/icon.svg`} />
       </head>
       <body>
-        {/* Google Analytics (gtag.js) */}
-        <Script
-          src="https://www.googletagmanager.com/gtag/js?id=G-RNWSKXGPQD"
-          strategy="afterInteractive"
-        />
-        <Script id="ga-gtag" strategy="afterInteractive">
+        {/* Google Analytics (gtag.js) + Ahrefs Web Analytics, loaded only on the
+            production host so localhost and *.vercel.app previews don't pollute
+            the numbers. Off-prod `window.gtag` stays undefined, so track() is a
+            no-op there. */}
+        <Script id="analytics" strategy="afterInteractive">
           {`
-            window.dataLayer = window.dataLayer || [];
-            function gtag(){dataLayer.push(arguments);}
-            gtag('js', new Date());
-            gtag('config', 'G-RNWSKXGPQD');
+            if (location.hostname === ${JSON.stringify(PROD_HOST)}) {
+              window.dataLayer = window.dataLayer || [];
+              window.gtag = function(){dataLayer.push(arguments);};
+              gtag('js', new Date());
+              gtag('config', 'G-RNWSKXGPQD');
+              var ga = document.createElement('script');
+              ga.async = true;
+              ga.src = 'https://www.googletagmanager.com/gtag/js?id=G-RNWSKXGPQD';
+              document.head.appendChild(ga);
+              var ah = document.createElement('script');
+              ah.async = true;
+              ah.src = 'https://analytics.ahrefs.com/analytics.js';
+              ah.setAttribute('data-key', 'FXA+NiNrkB9sI55LE+lvGw');
+              document.head.appendChild(ah);
+            }
           `}
         </Script>
-        {/* Ahrefs Web Analytics */}
-        <Script
-          src="https://analytics.ahrefs.com/analytics.js"
-          data-key="FXA+NiNrkB9sI55LE+lvGw"
-          strategy="afterInteractive"
-        />
         <WebVitals />
         <JsonLd data={siteJsonLd} />
         {children}

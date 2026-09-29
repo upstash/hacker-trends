@@ -148,6 +148,56 @@ export function isKnownTermSlug(slug: string): boolean {
   return TERM_BY_SLUG.has(slug.toLowerCase());
 }
 
+/* ---------- display casing ------------------------------------------ */
+
+/** Proper spelling for words the per-word capitalizer below gets wrong:
+ *  acronyms and brand casing. Keyed by the lowercase catalog word. */
+const WORD_CASE: Record<string, string> = {
+  activitypub: "ActivityPub", crowdstrike: "CrowdStrike", leetcode: "LeetCode",
+  systemd: "systemd", ai: "AI", agi: "AGI", api: "API", arm: "ARM", amd: "AMD", aws: "AWS",
+  chatgpt: "ChatGPT", clickhouse: "ClickHouse", cobol: "COBOL",
+  cockroachdb: "CockroachDB", coffeescript: "CoffeeScript", couchdb: "CouchDB",
+  cpu: "CPU", crispr: "CRISPR", "dall-e": "DALL-E", deepseek: "DeepSeek",
+  defi: "DeFi", devops: "DevOps", dhh: "DHH", digitalocean: "DigitalOcean",
+  duckdb: "DuckDB", dynamodb: "DynamoDB", esbuild: "esbuild", ffmpeg: "FFmpeg",
+  "fly.io": "Fly.io", freebsd: "FreeBSD", ftx: "FTX", gamestop: "GameStop",
+  gdpr: "GDPR", github: "GitHub", gitlab: "GitLab", "glp-1": "GLP-1",
+  "gpt-4": "GPT-4", gpu: "GPU", graphql: "GraphQL", grpc: "gRPC", h1b: "H-1B",
+  hashicorp: "HashiCorp", html5: "HTML5", htmx: "htmx", ico: "ICO",
+  ipv6: "IPv6", javascript: "JavaScript", jax: "JAX", jquery: "jQuery",
+  angularjs: "AngularJS", langchain: "LangChain", lastpass: "LastPass",
+  "lk-99": "LK-99", log4j: "Log4j", lsp: "LSP", m1: "M1", macbook: "MacBook",
+  mcp: "MCP", mongodb: "MongoDB", mysql: "MySQL", nft: "NFT", nixos: "NixOS",
+  "node.js": "Node.js", npm: "npm", openai: "OpenAI", openbsd: "OpenBSD",
+  opentofu: "OpenTofu", phonegap: "PhoneGap", php: "PHP", pytorch: "PyTorch",
+  rabbitmq: "RabbitMQ", ram: "RAM", rest: "REST", "risc-v": "RISC-V",
+  rss: "RSS", sbf: "SBF", solarwinds: "SolarWinds", sopa: "SOPA",
+  spacex: "SpaceX", sqlite: "SQLite", sspl: "SSPL", tdd: "TDD",
+  tensorflow: "TensorFlow", tiktok: "TikTok", tsmc: "TSMC",
+  typescript: "TypeScript", vscode: "VS Code", wannacry: "WannaCry",
+  web3: "Web3", wework: "WeWork", wireguard: "WireGuard", x86: "x86",
+  xz: "XZ", yaml: "YAML", zirp: "ZIRP",
+};
+
+/** Joining words kept lowercase mid-phrase ("Ruby on Rails"). */
+const SMALL_WORDS = new Set(["a", "and", "of", "on", "the", "to", "vs"]);
+
+/** Display spelling of a catalog term for titles and page copy: each word
+ *  capitalized, acronyms and brands spelled properly ("claude code" ->
+ *  "Claude Code", "generative ai" -> "Generative AI", "php" -> "PHP"). */
+export function displayTerm(term: string): string {
+  return term
+    .trim()
+    .split(/\s+/)
+    .map((w, i) => {
+      const lw = w.toLowerCase();
+      if (WORD_CASE[lw]) return WORD_CASE[lw];
+      if (i > 0 && SMALL_WORDS.has(lw)) return lw;
+      return w.charAt(0).toUpperCase() + w.slice(1);
+    })
+    .join(" ");
+}
+
 /* ---------- SEO tiers ------------------------------------------------ */
 /* Not every catalog term deserves a slot in the search index: the long tail of
  * HN-insider jargon can't realistically rank and only dilutes the site's

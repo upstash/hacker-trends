@@ -7,10 +7,13 @@
  * themselves - can still track clicks through to Upstash / the repo, the
  * conversion this whole demo is pitching for. Client components in the app
  * (HackerTrends pitch, CodePanel) instead call trackOutbound() inline.
+ *
+ * upstash.com links get UTM params, and the referrer is kept (`noopener`, not
+ * `noreferrer`) so Upstash's own analytics can see where the visit came from.
  */
 
 import type { ReactNode } from "react";
-import { trackOutbound } from "@/lib/analytics";
+import { outboundUrl, trackOutbound } from "@/lib/analytics";
 
 export function OutboundLink({
   destination,
@@ -27,9 +30,9 @@ export function OutboundLink({
 }) {
   return (
     <a
-      href={href}
+      href={outboundUrl(href, location)}
       target="_blank"
-      rel="noreferrer"
+      rel="noopener"
       className={className}
       onClick={() => trackOutbound(destination, location)}
     >

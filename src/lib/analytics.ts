@@ -16,9 +16,15 @@
  *   zero_results   - a search settled with no matches (content/data gaps).
  *   see_code_open  - the "see the code" panel was expanded (is the pitch landing?).
  *   code_tab       - a tab inside that panel was switched.
+ *   share          - the "share" button copied a link to the current view.
+ *   jobs_search    - a who-is-hiring comparison changed (chips or gallery card).
+ *   load_error     - a chart / result / gallery fetch failed, incl. load shedding
+ *                    (`busy`, `rate_limited`): how many people saw an error.
  *   outbound_click - a link off-site to Upstash or GitHub (the conversion win).
- *   web_vital      - a Core Web Vital sample (perf on real traffic).
+ *   LCP/INP/CLS/FCP/TTFB - Core Web Vitals samples (perf on real traffic).
  */
+
+import { ApiError } from "./hn-search";
 
 // gtag is defined by the inline snippet in app/layout.tsx.
 declare global {
@@ -41,6 +47,13 @@ type EventMap = {
   zero_results: { terms: string; sort: string };
   see_code_open: { tab: string };
   code_tab: { tab: string };
+  share: { terms: string; term_count: number };
+  jobs_search: { terms: string; term_count: number; source: "chips" | "gallery" };
+  load_error: {
+    scope: "chart" | "results" | "gallery" | "jobs_chart" | "jobs_comments";
+    code: string;
+    attempt?: number;
+  };
   outbound_click: {
     destination: "upstash" | "github";
     location: string;
@@ -59,6 +72,31 @@ export function track<K extends keyof EventMap>(name: K, params: EventMap[K]) {
     clean[k] = typeof v === "string" ? clamp(v) : v;
   }
   window.gtag("event", name, clean);
+}
+
+/** Log a failed fetch as `load_error`. Aborts are the app cancelling a stale
+ *  request, not a failure anyone saw, so they're skipped. */
+export function trackError(
+  scope: EventMap["load_error"]["scope"],
+  e: unknown,
+  attempt?: number,
+) {
+  if ((e as { name?: string } | null)?.name === "AbortError") return;
+  const code = e instanceof ApiError ? e.code : "network";
+  track("load_error", attempt === undefined ? { scope, code } : { scope, code, attempt });
+}
+
+/** Tag an upstash.com link with UTM params so Upstash's own analytics can
+ *  attribute the visit to this demo (per surface via `utm_content`). Other
+ *  hosts pass through unchanged. */
+export function outboundUrl(href: string, location: string): string {
+  const u = new URL(href);
+  if (u.hostname !== "upstash.com") return href;
+  u.searchParams.set("utm_source", "hackernewstrends");
+  u.searchParams.set("utm_medium", "referral");
+  u.searchParams.set("utm_campaign", "hacker-trends");
+  u.searchParams.set("utm_content", location);
+  return u.toString();
 }
 
 /** Convenience for the off-site links - the metric the demo ultimately cares

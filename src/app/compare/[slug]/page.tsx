@@ -23,6 +23,7 @@ import {
   HISTORY_TO_YEAR,
   OG_BASE,
   TWITTER_BASE,
+  displayTerm,
 } from "@/lib/site";
 import { COMPARISONS, type Comparison } from "@/lib/examples";
 import { MAX_TERMS } from "@/lib/share-url";
@@ -64,7 +65,7 @@ function curatedForSlug(slug: string): Comparison {
 }
 
 function joinTerms(terms: string[]): string {
-  return terms.join(" vs ");
+  return terms.map(displayTerm).join(" vs ");
 }
 
 export async function generateMetadata({
@@ -123,10 +124,10 @@ export default async function ComparePage({
   const summary =
     lead.stats.total > 0
       ? `Across ${HISTORY_FROM_YEAR}–${HISTORY_TO_YEAR} of Hacker News, ${
-          lead.term
+          displayTerm(lead.term)
         } leads ${label} with ${lead.stats.total.toLocaleString()} mentions${
           runnerUp
-            ? ` to ${runnerUp.term}’s ${runnerUp.stats.total.toLocaleString()}`
+            ? ` to ${displayTerm(runnerUp.term)}’s ${runnerUp.stats.total.toLocaleString()}`
             : ""
         }${lead.stats.peakLabel ? `, peaking in ${lead.stats.peakLabel}` : ""}.`
       : "";

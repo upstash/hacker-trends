@@ -6,7 +6,7 @@
  */
 
 import type React from "react";
-import { trackOutbound } from "@/lib/analytics";
+import { outboundUrl, trackOutbound } from "@/lib/analytics";
 
 /* ---- tiny, controlled-input syntax highlighter ---------------------- */
 /*
@@ -112,16 +112,16 @@ export function CodeLinks({
         className={hideGithubOnMobile ? "code-github hidden sm:inline" : "code-github"}
         href="https://github.com/upstash/hacker-trends"
         target="_blank"
-        rel="noreferrer"
+        rel="noopener"
         onClick={() => trackOutbound("github", "code_panel")}
       >
         github
       </a>
       <a
         className="code-poweredby"
-        href="https://upstash.com/docs/redis/search"
+        href={outboundUrl("https://upstash.com/docs/redis/search", "code_panel")}
         target="_blank"
-        rel="noreferrer"
+        rel="noopener"
         onClick={() => trackOutbound("upstash", "code_panel")}
       >
         <span>Powered by</span>

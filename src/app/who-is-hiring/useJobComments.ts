@@ -27,6 +27,7 @@
 
 import { useCallback, useRef, useState } from "react";
 import { searchPosts, friendlyError, type HnDoc } from "@/lib/hn-search";
+import { trackError } from "@/lib/analytics";
 import { currentMonthIndex, monthIndex, parseParts } from "@/lib/jobs-trends";
 import { drillIndex } from "@/lib/jobs-index";
 import { QUERYING_DISABLED } from "@/lib/maintenance";
@@ -247,6 +248,7 @@ export function useJobComments() {
       .catch((e) => {
         if (id !== reqId.current) return;
         setState({ ...IDLE, status: "error", load: meta, error: friendlyError(e) });
+        trackError("jobs_comments", e);
       });
   }, []);
 
@@ -267,6 +269,7 @@ export function useJobComments() {
         if (id !== reqId.current) return;
         // Keep the postings already on screen; just surface the failure.
         setState((s) => ({ ...s, loadingMore: false, error: friendlyError(e) }));
+        trackError("jobs_comments", e);
       });
   }, []);
 

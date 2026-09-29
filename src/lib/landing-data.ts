@@ -21,6 +21,7 @@ import { decodeExamplesWire, type ExamplesWire } from "@/lib/examples-wire";
 import { isQueryingDisabled } from "@/lib/runtime-flags";
 import { SLOTS, lastSlotOf, slotOf, slotRange } from "@/lib/trend-time";
 import { type HnDoc } from "@/lib/hn-query";
+import { displayTerm } from "@/lib/site";
 import snapshot from "@/app/examples.json/snapshot.json";
 
 const HAS_CREDS = !!(
@@ -162,7 +163,7 @@ export function statsFor(buckets: MonthCount[], endSlot = SLOTS - 1): TermStats 
  *  the sentence an LLM answer or a featured snippet can lift verbatim. Built
  *  deterministically from the stats (no model), so it's always accurate. */
 export function trendSummary(term: string, stats: TermStats): string {
-  const display = term.charAt(0).toUpperCase() + term.slice(1);
+  const display = displayTerm(term);
   if (stats.total === 0) {
     return `${display} has no recorded Hacker News mentions in this index yet.`;
   }

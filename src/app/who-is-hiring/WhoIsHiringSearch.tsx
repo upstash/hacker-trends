@@ -17,7 +17,7 @@
  */
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { DEFAULT_TERMS, MAX_SERIES, seriesSlots } from "@/lib/jobs-trends";
 import { JobsStackedBars, useChartWindow } from "./JobsStackedBars";
 import { JobsCompareChips } from "./JobsCompareChips";
@@ -26,7 +26,7 @@ import { JobsGalleries } from "./JobsGalleries";
 import { useJobSeries } from "./useJobSeries";
 import { useJobsDrill } from "./useJobsDrill";
 import { QUERYING_DISABLED } from "@/lib/maintenance";
-import { trackOutbound } from "@/lib/analytics";
+import { outboundUrl, track, trackOutbound } from "@/lib/analytics";
 
 /** How long the URL waits for the chips to settle before it is rewritten. */
 const URL_SYNC_MS = 400;
@@ -57,6 +57,8 @@ export function WhoIsHiringSearch() {
   // default. Held here so a click on a gallery card (T12) can swap it.
   const urlTerms = useUrlTerms();
   const [picked, setPicked] = useState<string[] | null>(null);
+  // What made the latest pick, for the `jobs_search` event.
+  const pickSource = useRef<"chips" | "gallery">("chips");
   const terms = picked ?? urlTerms ?? DEFAULT_TERMS;
   const [windowKey, setWindowKey] = useChartWindow();
   const [normalized, setNormalized] = useState(true);
@@ -81,6 +83,11 @@ export function WhoIsHiringSearch() {
       const url = `${window.location.pathname}${qs ? `?${qs}` : ""}${window.location.hash}`;
       // `null` state (like the homepage) takes Next's synced replaceState path.
       window.history.replaceState(null, "", url);
+      track("jobs_search", {
+        terms: next.join(" vs "),
+        term_count: next.length,
+        source: pickSource.current,
+      });
     }, URL_SYNC_MS);
     return () => clearTimeout(t);
   }, [picked]);
@@ -89,6 +96,7 @@ export function WhoIsHiringSearch() {
    *  drill-down panel intentionally stays as-is until the user hovers the new
    *  chart. */
   const pickCard = useCallback((next: string[]) => {
+    pickSource.current = "gallery";
     setPicked(next);
     if (typeof window !== "undefined") {
       window.scrollTo({ top: 0, behavior: "smooth" });
@@ -136,9 +144,9 @@ export function WhoIsHiringSearch() {
           a language, tool or work-style shows up across those postings - a live
           read on what the tech job market actually asks for, every bar a single{" "}
           <a
-            href="https://upstash.com/docs/redis/search"
+            href={outboundUrl("https://upstash.com/docs/redis/search", "jobs_hub_pitch")}
             target="_blank"
-            rel="noreferrer"
+            rel="noopener"
             className="text-[color:var(--hn-orange)] whitespace-nowrap"
             onClick={() => trackOutbound("upstash", "jobs_hub_pitch")}
           >
@@ -152,7 +160,10 @@ export function WhoIsHiringSearch() {
       <div className="px-3 pt-4">
         <JobsCompareChips
           terms={terms}
-          setTerms={setPicked}
+          setTerms={(t) => {
+            pickSource.current = "chips";
+            setPicked(t);
+          }}
           totalAt={(i) => series[i]?.total}
         />
       </div>

@@ -22,6 +22,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { aggregate, ApiError, friendlyError } from "@/lib/hn-search";
+import { trackError } from "@/lib/analytics";
 import { drillIndex } from "@/lib/jobs-index";
 import { QUERYING_DISABLED } from "@/lib/maintenance";
 import { galleryPart, useJobsGallery } from "./useJobsGallery";
@@ -150,6 +151,7 @@ export function useJobSeries(terms: string[], initial?: SeriesData[]): JobSeries
       const reasons = settled
         .filter((r): r is PromiseRejectedResult => r.status === "rejected")
         .map((r) => r.reason);
+      if (reasons.length) trackError("jobs_chart", reasons[0]);
       const series = cleaned.map((label, i) => {
         const r = settled[i];
         const byMonth = r.status === "fulfilled" ? r.value : new Map<string, number>();

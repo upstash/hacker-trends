@@ -27,6 +27,7 @@ import {
   HISTORY_SPAN_YEARS,
   OG_BASE,
   TWITTER_BASE,
+  displayTerm,
 } from "@/lib/site";
 import { getTermLanding, trendSummary } from "@/lib/landing-data";
 import { analysisForSlug } from "@/lib/trend-analysis";
@@ -50,10 +51,6 @@ export function generateStaticParams() {
   return [];
 }
 
-function titleCase(term: string): string {
-  return term.charAt(0).toUpperCase() + term.slice(1);
-}
-
 export async function generateMetadata({
   params,
 }: {
@@ -61,7 +58,7 @@ export async function generateMetadata({
 }): Promise<Metadata> {
   const { term: slug } = await params;
   const term = slugToTerm(slug);
-  const display = titleCase(term);
+  const display = displayTerm(term);
   const title = `${display} on Hacker News - ${HISTORY_SPAN_YEARS} years of mentions, charted`;
   const description = `How often ${display} came up on Hacker News from ${HISTORY_FROM_YEAR} to ${HISTORY_TO_YEAR}: a live mention-over-time chart, the peak month, and the top stories - powered by Upstash Redis Search.`;
   const path = `/trends/${termToSlug(term)}`;
@@ -94,7 +91,7 @@ export default async function TrendPage({
   // page; send it to the live tool instead of rendering an empty chart.
   if (stats.total === 0 && !isKnownTermSlug(slug)) notFound();
 
-  const display = titleCase(term);
+  const display = displayTerm(term);
   const slugForTerm = termToSlug(term);
   const path = `/trends/${slugForTerm}`;
   const compareHref = `/?q=${encodeURIComponent(term)}`;

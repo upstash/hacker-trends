@@ -15,7 +15,7 @@ import { decodeExamplesWire, type ExamplesWire } from "@/lib/examples-wire";
 import { EXAMPLE_GROUPS, COMPARISONS, allExampleTerms } from "@/lib/examples";
 import { SLOTS, lastSlotOf, slotOf, slotRange } from "@/lib/trend-time";
 import { sortByCoolness } from "@/lib/coolness";
-import { track, trackOutbound } from "@/lib/analytics";
+import { outboundUrl, track, trackError, trackOutbound } from "@/lib/analytics";
 import { QUERYING_DISABLED, QUERYING_DISABLED_LABEL } from "@/lib/maintenance";
 import { TrendChart, type Range, type Series } from "./components/TrendChart";
 import { Results } from "./components/Results";
@@ -126,11 +126,16 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
       .then((r) => (r.ok ? r.json() : null))
       .then((d: ExamplesWire | null) => {
         if (d?.terms) setExamplesData(d);
-        else setExamplesFailed(true);
+        else {
+          setExamplesFailed(true);
+          track("load_error", { scope: "gallery", code: "empty" });
+        }
       })
-      .catch(() => {
+      .catch((e) => {
         // sparklines stay flat; catalog terms fall back to live aggregates
-        if (!ctrl.signal.aborted) setExamplesFailed(true);
+        if (ctrl.signal.aborted) return;
+        setExamplesFailed(true);
+        trackError("gallery", e);
       });
     return () => ctrl.abort();
   }, []);
@@ -299,6 +304,7 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
           .then((r) => setLive((m) => ({ ...m, [t]: r.buckets })))
           .catch((e) => {
             setAggErrs((m) => ({ ...m, [t]: e }));
+            trackError("chart", e, n);
             const shed = e instanceof ApiError && (e.code === "busy" || e.code === "rate_limited");
             if (shed && n < MAX_AGG_RETRIES) {
               return new Promise<void>((r) => setTimeout(r, 2000 * 2 ** n + Math.random() * 1000)).then(
@@ -359,7 +365,9 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
         }
       })
       .catch((e) => {
-        if (!ctrl.signal.aborted && e?.name !== "AbortError") setSearchErr({ key, e });
+        if (ctrl.signal.aborted || e?.name === "AbortError") return;
+        setSearchErr({ key, e });
+        trackError("results", e);
       });
     return () => ctrl.abort();
   }, [termsKey, queryTermsKey, sort, fromIso, toIso, commentsOnly]);
@@ -539,6 +547,16 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
           Hacker News
         </span>
         <div className="ml-auto flex items-center gap-2">
+          <a
+            href={outboundUrl("https://upstash.com/docs/redis/search", "header")}
+            target="_blank"
+            rel="noopener"
+            className="hidden sm:inline-flex items-center gap-1 text-[11px] font-semibold whitespace-nowrap hover:underline"
+            onClick={() => trackOutbound("upstash", "header")}
+          >
+            <UpstashMark />
+            Built on Upstash Redis Search ↗
+          </a>
           <Link
             href="/who-is-hiring"
             className="text-[11px] font-semibold whitespace-nowrap hover:underline"
@@ -547,7 +565,7 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
             Who&apos;s hiring? →
           </Link>
           <DataFreshness />
-          <ShareButton />
+          <ShareButton terms={allTerms} />
         </div>
       </div>
 
@@ -559,10 +577,10 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
           Each line is a live date-histogram over 45M posts and comments,
           built on{" "}
           <a
-            href="https://upstash.com/docs/redis/search"
+            href={outboundUrl("https://upstash.com/docs/redis/search", "pitch")}
             target="_blank"
-            rel="noreferrer"
-            className="text-[color:var(--hn-orange)] whitespace-nowrap"
+            rel="noopener"
+            className="text-[color:var(--hn-orange)] font-semibold whitespace-nowrap"
             onClick={() => trackOutbound("upstash", "pitch")}
           >
             <span
@@ -844,11 +862,18 @@ export function HackerTrends({ initial }: { initial: ShareState }) {
 
 // Copies the current address bar, which the sync effect keeps pointed at the
 // exact view, so it can be pasted to share these terms + filters with someone.
-function ShareButton() {
+// The copy carries UTM params so visits from shared links show up as their own
+// source in GA instead of blending into direct traffic; the sync effect leaves
+// them in place on landing (it only rewrites when the view itself differs).
+function ShareButton({ terms }: { terms: string[] }) {
   const [copied, setCopied] = useState(false);
   const copy = async () => {
+    track("share", { terms: terms.join(" vs "), term_count: terms.length });
+    const url = new URL(window.location.href);
+    url.searchParams.set("utm_source", "share");
+    url.searchParams.set("utm_medium", "link");
     try {
-      await navigator.clipboard.writeText(window.location.href);
+      await navigator.clipboard.writeText(url.toString());
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch {
